@@ -1,4 +1,4 @@
-# PITC Bill Scrapper & MDI Analyzer
+# Bill Scrapper
 
 Desktop UI application to scrape PITC (PESCO) electricity bills from account/reference numbers in Excel files and perform automated MDI (Maximum Demand Indicator) difference and fixed charges analysis.
 
@@ -54,12 +54,12 @@ Desktop UI application to scrape PITC (PESCO) electricity bills from account/ref
 ## 🚀 How to Run
 
 ### Method 1: Double Click `run.bat`
-Simply double-click the `run.bat` file in `D:\Projects\MDIScrapper` to launch the application.
+Simply double-click the `run.bat` file in `D:\Projects\BillScrapper` to launch the application.
 
 ### Method 2: Command Line
 Open PowerShell or Command Prompt in the project folder and execute:
 ```bash
-cd D:\Projects\MDIScrapper
+cd D:\Projects\BillScrapper
 python main.py
 ```
 
@@ -93,10 +93,14 @@ pip install pyinstaller
 
 ## 🛠️ How to Build `.exe` (PyInstaller)
 
-Run the following command in your VS Code terminal / PowerShell in `D:\Projects\MDIScrapper`:
+Run the following command in your VS Code terminal / PowerShell in `D:\Projects\BillScrapper`:
 
 ```powershell
-pyinstaller --noconsole --onefile --name "MDIScrapper" --icon "assets\mdiscrapper.ico" --add-data "assets\mdiscrapper.ico;assets" --clean main.py
+pyinstaller BillScrapper.spec
+```
+or manually:
+```powershell
+pyinstaller --noconsole --onefile --name "BillScrapper" --icon "assets\billscrapper.ico" --add-data "assets\billscrapper.ico;assets" --clean main.py
 ```
 
-The standalone executable `MDIScrapper.exe` will be generated in the `D:\Projects\MDIScrapper\dist\` folder.
+The standalone executable `BillScrapper.exe` will be generated in the `D:\Projects\BillScrapper\dist\` folder.

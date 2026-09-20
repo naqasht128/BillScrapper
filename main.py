@@ -1,4 +1,4 @@
-"""Desktop PITC Bill Scraper & MDI Analyzer.
+"""Desktop Bill Scrapper.
 
 The selected .xlsx workbook is updated in place using its existing headings.
 Excluded fields are removed before requests are made, and returned values are

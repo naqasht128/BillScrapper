@@ -737,9 +737,12 @@ class PITCBillScraper:
 class BillScraperApp(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("PITC Bill Scrapper & MDI Analyzer")
+        self.title("Bill Scrapper")
         try:
-            self.iconbitmap(resource_path("assets/mdiscrapper.ico"))
+            icon_file = resource_path("assets/billscrapper.ico")
+            if not os.path.exists(icon_file):
+                icon_file = resource_path("assets/mdiscrapper.ico")
+            self.iconbitmap(icon_file)
         except tk.TclError:
             pass
         self.geometry("640x600")
@@ -780,7 +783,7 @@ class BillScraperApp(tk.Tk):
         header_frame = ttk.Frame(root)
         header_frame.pack(fill="x", pady=(0, 12))
 
-        title_lbl = ttk.Label(header_frame, text="PITC Bill Scrapper & MDI Analyzer", font=("Segoe UI", 16, "bold"), foreground="#1e3a8a")
+        title_lbl = ttk.Label(header_frame, text="Bill Scrapper", font=("Segoe UI", 16, "bold"), foreground="#1e3a8a")
         title_lbl.pack(anchor="w")
 
         sub_lbl = ttk.Label(header_frame, text="Developed by Tahir Naqash | Automated Bill Scraping & Fixed Charges Audit", font=("Segoe UI", 9), foreground="#64748b")

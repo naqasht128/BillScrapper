@@ -1,5 +1,5 @@
 @echo off
-title PITC Bill Scrapper & MDI Analyzer
+title Bill Scrapper
 cd /d "%~dp0"
 python main.py
 if %ERRORLEVEL% NEQ 0 (

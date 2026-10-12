@@ -5,7 +5,7 @@ a = Analysis(
     ['main.py'],
     pathex=[],
     binaries=[],
-    datas=[('assets\\billscrapper.ico', 'assets'), ('assets\\mdiscrapper.ico', 'assets')],
+    datas=[('assets', 'assets')],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},
@@ -15,6 +15,10 @@ a = Analysis(
     optimize=0,
 )
 pyz = PYZ(a.pure)
+
+import sys
+
+exe_icon = ['assets/billscrapper.ico'] if sys.platform == 'win32' else None
 
 exe = EXE(
     pyz,
@@ -35,5 +39,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=['assets\\billscrapper.ico'],
+    icon=exe_icon,
 )

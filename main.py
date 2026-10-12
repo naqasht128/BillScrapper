@@ -734,16 +734,27 @@ class PITCBillScraper:
         workbook.save(path)
 
 
+# System-adaptive font families
+UI_FONT = "Segoe UI" if sys.platform == "win32" else "DejaVu Sans"
+MONO_FONT = "Consolas" if sys.platform == "win32" else "DejaVu Sans Mono"
+
+
 class BillScraperApp(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("Bill Scrapper")
+        self._icon_img = None
         try:
-            icon_file = resource_path("assets/billscrapper.ico")
-            if not os.path.exists(icon_file):
-                icon_file = resource_path("assets/mdiscrapper.ico")
-            self.iconbitmap(icon_file)
-        except tk.TclError:
+            png_file = resource_path("assets/billscrapper-icon.png")
+            if os.path.exists(png_file):
+                self._icon_img = tk.PhotoImage(file=png_file)
+                self.iconphoto(True, self._icon_img)
+            elif sys.platform == "win32":
+                icon_file = resource_path("assets/billscrapper.ico")
+                if not os.path.exists(icon_file):
+                    icon_file = resource_path("assets/mdiscrapper.ico")
+                self.iconbitmap(icon_file)
+        except Exception:
             pass
         self.geometry("640x600")
         self.minsize(580, 520)
@@ -783,17 +794,17 @@ class BillScraperApp(tk.Tk):
         header_frame = ttk.Frame(root)
         header_frame.pack(fill="x", pady=(0, 12))
 
-        title_lbl = ttk.Label(header_frame, text="Bill Scrapper", font=("Segoe UI", 16, "bold"), foreground="#1e3a8a")
+        title_lbl = ttk.Label(header_frame, text="Bill Scrapper", font=(UI_FONT, 16, "bold"), foreground="#1e3a8a")
         title_lbl.pack(anchor="w")
 
-        sub_lbl = ttk.Label(header_frame, text="Developed by Tahir Naqash | Automated Bill Scraping & Fixed Charges Audit", font=("Segoe UI", 9), foreground="#64748b")
+        sub_lbl = ttk.Label(header_frame, text="Developed by Tahir Naqash | Automated Bill Scraping & Fixed Charges Audit", font=(UI_FONT, 9), foreground="#64748b")
         sub_lbl.pack(anchor="w", pady=(2, 0))
 
         files_frame = ttk.LabelFrame(root, text=" Target Workbook ", padding=10)
         files_frame.pack(fill="x", pady=(0, 10))
 
-        ttk.Label(files_frame, text="Excel File (.xlsx):", font=("Segoe UI", 9, "bold")).grid(row=0, column=0, sticky="w", pady=4)
-        entry = ttk.Entry(files_frame, textvariable=self.input_var, font=("Segoe UI", 9))
+        ttk.Label(files_frame, text="Excel File (.xlsx):", font=(UI_FONT, 9, "bold")).grid(row=0, column=0, sticky="w", pady=4)
+        entry = ttk.Entry(files_frame, textvariable=self.input_var, font=(UI_FONT, 9))
         entry.grid(row=0, column=1, sticky="ew", padx=(8, 8), pady=4)
 
         browse_btn = ttk.Button(files_frame, text="Browse...", command=self.choose_input)
@@ -806,37 +817,37 @@ class BillScraperApp(tk.Tk):
         settings_box = ttk.LabelFrame(mid_frame, text=" Settings ", padding=8)
         settings_box.pack(side="left", fill="both", expand=True, padx=(0, 6))
 
-        ttk.Label(settings_box, text="Delay (seconds):", font=("Segoe UI", 9)).grid(row=0, column=0, sticky="w", pady=2)
+        ttk.Label(settings_box, text="Delay (seconds):", font=(UI_FONT, 9)).grid(row=0, column=0, sticky="w", pady=2)
         spin = ttk.Spinbox(settings_box, from_=0.5, to=30.0, increment=0.5, textvariable=self.delay_var, width=6)
         spin.grid(row=0, column=1, sticky="w", padx=(6, 4), pady=2)
-        ttk.Label(settings_box, text="(Default 2.0s prevents PITC blocking)", font=("Segoe UI", 8, "italic"), foreground="#64748b").grid(row=1, column=0, columnspan=2, sticky="w", pady=(2, 0))
+        ttk.Label(settings_box, text="(Default 2.0s prevents PITC blocking)", font=(UI_FONT, 8, "italic"), foreground="#64748b").grid(row=1, column=0, columnspan=2, sticky="w", pady=(2, 0))
 
         stats_box = ttk.LabelFrame(mid_frame, text=" Progress Summary ", padding=8)
         stats_box.pack(side="right", fill="both", expand=True, padx=(6, 0))
 
         ttk.Label(stats_box, text="Total:").grid(row=0, column=0, sticky="w", padx=4)
-        ttk.Label(stats_box, textvariable=self.total_var, font=("Segoe UI", 9, "bold")).grid(row=0, column=1, sticky="w", padx=4)
+        ttk.Label(stats_box, textvariable=self.total_var, font=(UI_FONT, 9, "bold")).grid(row=0, column=1, sticky="w", padx=4)
 
         ttk.Label(stats_box, text="OK:").grid(row=0, column=2, sticky="w", padx=4)
-        ttk.Label(stats_box, textvariable=self.ok_var, font=("Segoe UI", 9, "bold"), foreground="#15803d").grid(row=0, column=3, sticky="w", padx=4)
+        ttk.Label(stats_box, textvariable=self.ok_var, font=(UI_FONT, 9, "bold"), foreground="#15803d").grid(row=0, column=3, sticky="w", padx=4)
 
         ttk.Label(stats_box, text="Errors:").grid(row=0, column=4, sticky="w", padx=4)
-        ttk.Label(stats_box, textvariable=self.err_var, font=("Segoe UI", 9, "bold"), foreground="#b91c1c").grid(row=0, column=5, sticky="w", padx=4)
+        ttk.Label(stats_box, textvariable=self.err_var, font=(UI_FONT, 9, "bold"), foreground="#b91c1c").grid(row=0, column=5, sticky="w", padx=4)
 
         self.progress = ttk.Progressbar(root, mode="determinate", style="Green.Horizontal.TProgressbar")
         self.progress.pack(fill="x", pady=(4, 6))
 
-        status_lbl = ttk.Label(root, textvariable=self.status_var, font=("Segoe UI", 9), foreground="#0f172a")
+        status_lbl = ttk.Label(root, textvariable=self.status_var, font=(UI_FONT, 9), foreground="#0f172a")
         status_lbl.pack(anchor="w", pady=(0, 6))
 
         log_frame = ttk.LabelFrame(root, text=" Live Execution Log ", padding=6)
         log_frame.pack(fill="both", expand=True, pady=(0, 10))
 
-        self.log = tk.Text(log_frame, height=10, state="disabled", wrap="word", font=("Consolas", 9), bg="#f8fafc", fg="#0f172a")
+        self.log = tk.Text(log_frame, height=10, state="disabled", wrap="word", font=(MONO_FONT, 9), bg="#f8fafc", fg="#0f172a")
         self.log.tag_config("ok", foreground="#16a34a")
         self.log.tag_config("err", foreground="#dc2626")
         self.log.tag_config("info", foreground="#2563eb")
-        self.log.tag_config("bold", font=("Consolas", 9, "bold"))
+        self.log.tag_config("bold", font=(MONO_FONT, 9, "bold"))
 
         scroll = ttk.Scrollbar(log_frame, orient="vertical", command=self.log.yview)
         self.log.configure(yscrollcommand=scroll.set)
@@ -849,14 +860,14 @@ class BillScraperApp(tk.Tk):
         self.start_button = tk.Button(
             btn_bar, text="▶  Start Scraping", command=self.start,
             bg="#16a34a", fg="white", activebackground="#15803d", activeforeground="white",
-            font=("Segoe UI", 10, "bold"), relief="raised", padx=16, pady=4, cursor="hand2"
+            font=(UI_FONT, 10, "bold"), relief="raised", padx=16, pady=4, cursor="hand2"
         )
         self.start_button.pack(side="left")
 
         self.cancel_button = tk.Button(
             btn_bar, text="⏹  Stop", command=self.cancel,
             bg="#dc2626", fg="white", activebackground="#b91c1c", activeforeground="white",
-            font=("Segoe UI", 10, "bold"), relief="raised", padx=14, pady=4, state="disabled", cursor="hand2"
+            font=(UI_FONT, 10, "bold"), relief="raised", padx=14, pady=4, state="disabled", cursor="hand2"
         )
         self.cancel_button.pack(side="left", padx=(10, 0))
 
@@ -873,10 +884,15 @@ class BillScraperApp(tk.Tk):
         val = self.input_var.get().strip()
         if val and Path(val).parent.exists():
             folder = str(Path(val).parent.resolve())
-            if sys.platform == "win32":
-                os.startfile(folder)
-            else:
-                subprocess.Popen(["explorer", folder])
+            try:
+                if sys.platform == "win32":
+                    os.startfile(folder)
+                elif sys.platform == "darwin":
+                    subprocess.Popen(["open", folder])
+                else:
+                    subprocess.Popen(["xdg-open", folder])
+            except Exception as exc:
+                messagebox.showerror("Error", f"Failed to open folder: {exc}")
         else:
             messagebox.showinfo("Select File", "Please select an Excel file first.")
 

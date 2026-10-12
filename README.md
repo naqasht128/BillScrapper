@@ -100,10 +100,10 @@ python main.py
 
 ## 📋 Input File Format
 
-- Prepare an Excel workbook (`.xlsx`).
+- Prepare an Excel (`.xlsx`) or LibreOffice Calc (`.ods`) workbook.
 - Put the 14-digit Account / Reference numbers in **Column A** (Row 1 can be `AC No.` or account numbers directly).
 - Optional: If you have existing statuses in a `status` column, they will be recognized.
-- Open the application, click **Browse...**, select your Excel file, and click **Start Scraping**.
+- Open the application, click **Browse...**, select your `.xlsx` or `.ods` file, and click **Start Scraping**.
 - The file is updated in place with all columns added and formatted.
 
 ---

@@ -1,12 +1,13 @@
 """Desktop Bill Scrapper.
 
-The selected .xlsx workbook is updated in place using its existing headings.
+The selected .xlsx or .ods workbook is updated in place using its existing headings.
 Excluded fields are removed before requests are made, and returned values are
 written strictly below their matching headings without column shifting.
 """
 
 from __future__ import annotations
 
+import io
 import os
 import queue
 import re
@@ -15,12 +16,14 @@ import sys
 import threading
 import time
 import tkinter as tk
+import zipfile
 from decimal import Decimal
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
 import requests
 from bs4 import BeautifulSoup
+from lxml import etree
 from openpyxl import load_workbook
 
 URL = "https://bill.pitc.com.pk/pescobill"
@@ -281,6 +284,285 @@ def text_lines(element):
         else:
             result.append(line)
     return result
+
+
+OFFICE_NS = "urn:oasis:names:tc:opendocument:xmlns:office:1.0"
+TABLE_NS = "urn:oasis:names:tc:opendocument:xmlns:table:1.0"
+TEXT_NS = "urn:oasis:names:tc:opendocument:xmlns:text:1.0"
+SUPPORTED_EXTENSIONS = {".xlsx", ".ods"}
+
+
+def _extract_ods_cell_value(cell):
+    """Extract cell value from an ODF <table:table-cell> element."""
+    val_type = cell.get(f"{{{OFFICE_NS}}}value-type")
+    p_els = cell.findall(f"{{{TEXT_NS}}}p")
+    text_val = "\n".join("".join(p.itertext()) for p in p_els).strip() if p_els else ""
+
+    if val_type in {"float", "currency", "percentage"}:
+        if re.fullmatch(r"0\d+", text_val):
+            return text_val
+        raw_val = cell.get(f"{{{OFFICE_NS}}}value")
+        if raw_val is not None:
+            try:
+                dec = Decimal(raw_val)
+                return int(dec) if dec == dec.to_integral_value() else float(dec)
+            except Exception:
+                pass
+        return text_val if text_val else None
+
+    if val_type == "boolean":
+        bool_val = cell.get(f"{{{OFFICE_NS}}}boolean-value")
+        if bool_val is not None:
+            return bool_val.lower() == "true"
+        return text_val if text_val else None
+
+    if val_type in {"date", "time"}:
+        if text_val:
+            return text_val
+        return cell.get(f"{{{OFFICE_NS}}}date-value") or cell.get(f"{{{OFFICE_NS}}}time-value")
+
+    return text_val if text_val != "" else None
+
+
+def _iter_ods_rows(container):
+    """Yield <table:table-row> elements in document order without descending into nested tables."""
+    row_tag = f"{{{TABLE_NS}}}table-row"
+    group_tags = {
+        f"{{{TABLE_NS}}}table-row-group",
+        f"{{{TABLE_NS}}}table-header-rows",
+        f"{{{TABLE_NS}}}table-rows",
+    }
+    for child in container:
+        if child.tag == row_tag:
+            yield child
+        elif child.tag in group_tags:
+            yield from _iter_ods_rows(child)
+
+
+class _ODSCell:
+    def __init__(self, sheet: ODSSheet, row: int, col: int):
+        self._sheet = sheet
+        self._row = row
+        self._col = col
+
+    @property
+    def value(self):
+        return self._sheet._cells.get((self._row, self._col))
+
+    @value.setter
+    def value(self, val):
+        if val is None or val == "":
+            self._sheet._cells.pop((self._row, self._col), None)
+        else:
+            self._sheet._cells[(self._row, self._col)] = val
+
+
+class ODSSheet:
+    """Worksheet-compatible interface for an OpenDocument Spreadsheet (.ods) table."""
+
+    def __init__(self):
+        self._cells = {}
+
+    @property
+    def max_row(self):
+        return max((r for (r, _) in self._cells), default=0)
+
+    @property
+    def max_column(self):
+        return max((c for (_, c) in self._cells), default=0)
+
+    def cell(self, row: int, column: int) -> _ODSCell:
+        return _ODSCell(self, row, column)
+
+    def delete_cols(self, idx: int, amount: int = 1):
+        if amount <= 0:
+            return
+        updated = {}
+        for (r, c), val in self._cells.items():
+            if c < idx:
+                updated[(r, c)] = val
+            elif c >= idx + amount:
+                updated[(r, c - amount)] = val
+        self._cells = updated
+
+    def delete_rows(self, idx: int, amount: int = 1):
+        if amount <= 0:
+            return
+        updated = {}
+        for (r, c), val in self._cells.items():
+            if r < idx:
+                updated[(r, c)] = val
+            elif r >= idx + amount:
+                updated[(r - amount, c)] = val
+        self._cells = updated
+
+
+class ODSWorkbook:
+    """Workbook-compatible reader/writer for LibreOffice / ODF .ods files."""
+
+    def __init__(self, path: Path):
+        try:
+            with zipfile.ZipFile(path, "r") as zf:
+                self._entries = [(info, zf.read(info.filename)) for info in zf.infolist()]
+        except zipfile.BadZipFile as exc:
+            raise RuntimeError(f"Invalid or corrupted .ods file: {path.name}") from exc
+
+        content_bytes = next((data for info, data in self._entries if info.filename == "content.xml"), None)
+        if content_bytes is None:
+            raise RuntimeError(f"Invalid .ods file (missing content.xml): {path.name}")
+
+        self._root = etree.fromstring(content_bytes)
+        self._table_el = self._root.find(f".//{{{TABLE_NS}}}table")
+        if self._table_el is None:
+            raise RuntimeError(f"No spreadsheet sheet found in {path.name}")
+
+        self.active = ODSSheet()
+        self._load_cells()
+
+    def _load_cells(self):
+        cell_tags = {f"{{{TABLE_NS}}}table-cell", f"{{{TABLE_NS}}}covered-table-cell"}
+        col_rep_attr = f"{{{TABLE_NS}}}number-columns-repeated"
+        row_rep_attr = f"{{{TABLE_NS}}}number-rows-repeated"
+
+        current_row = 1
+        for row_el in _iter_ods_rows(self._table_el):
+            try:
+                row_repeat = max(1, int(row_el.get(row_rep_attr, "1")))
+            except ValueError:
+                row_repeat = 1
+
+            col_idx = 1
+            row_vals = {}
+            for cell_el in row_el:
+                if cell_el.tag not in cell_tags:
+                    continue
+                try:
+                    col_repeat = max(1, int(cell_el.get(col_rep_attr, "1")))
+                except ValueError:
+                    col_repeat = 1
+
+                val = _extract_ods_cell_value(cell_el)
+                if val is not None and str(val) != "":
+                    for offset in range(min(col_repeat, 1024)):
+                        row_vals[col_idx + offset] = val
+                col_idx += col_repeat
+
+            if row_vals:
+                for r_offset in range(min(row_repeat, 10000)):
+                    for c, v in row_vals.items():
+                        self.active._cells[(current_row + r_offset, c)] = v
+            current_row += row_repeat
+
+    def save(self, path: Path):
+        max_r = self.active.max_row
+        max_c = self.active.max_column
+
+        row_containers = {
+            f"{{{TABLE_NS}}}table-row",
+            f"{{{TABLE_NS}}}table-row-group",
+            f"{{{TABLE_NS}}}table-header-rows",
+            f"{{{TABLE_NS}}}table-rows",
+        }
+        col_containers = {
+            f"{{{TABLE_NS}}}table-column",
+            f"{{{TABLE_NS}}}table-column-group",
+            f"{{{TABLE_NS}}}table-header-columns",
+            f"{{{TABLE_NS}}}table-columns",
+        }
+
+        insert_idx = None
+        for idx, child in enumerate(list(self._table_el)):
+            if child.tag in row_containers:
+                if insert_idx is None:
+                    insert_idx = idx
+                self._table_el.remove(child)
+
+        if insert_idx is None:
+            insert_idx = 0
+            for idx, child in enumerate(self._table_el):
+                if child.tag in col_containers:
+                    insert_idx = idx + 1
+
+        col_tag = f"{{{TABLE_NS}}}table-column"
+        col_rep_attr = f"{{{TABLE_NS}}}number-columns-repeated"
+        col_els = list(self._table_el.iter(col_tag))
+        covered_cols = 0
+        for el in col_els:
+            try:
+                covered_cols += max(1, int(el.get(col_rep_attr, "1")))
+            except ValueError:
+                covered_cols += 1
+
+        if max_c > covered_cols:
+            extra = max_c - covered_cols
+            if col_els:
+                last_col = col_els[-1]
+                try:
+                    last_rep = max(1, int(last_col.get(col_rep_attr, "1")))
+                except ValueError:
+                    last_rep = 1
+                last_col.set(col_rep_attr, str(last_rep + extra))
+            else:
+                new_col = etree.Element(col_tag)
+                new_col.set(col_rep_attr, str(max_c))
+                self._table_el.insert(0, new_col)
+                insert_idx += 1
+
+        row_tag = f"{{{TABLE_NS}}}table-row"
+        cell_tag = f"{{{TABLE_NS}}}table-cell"
+        p_tag = f"{{{TEXT_NS}}}p"
+        val_type_attr = f"{{{OFFICE_NS}}}value-type"
+        val_attr = f"{{{OFFICE_NS}}}value"
+        bool_attr = f"{{{OFFICE_NS}}}boolean-value"
+
+        for r in range(1, max_r + 1):
+            row_el = etree.Element(row_tag)
+            for c in range(1, max_c + 1):
+                cell_el = etree.SubElement(row_el, cell_tag)
+                val = self.active.cell(r, c).value
+                if val is None or val == "":
+                    continue
+                if isinstance(val, bool):
+                    cell_el.set(val_type_attr, "boolean")
+                    cell_el.set(bool_attr, "true" if val else "false")
+                    p_el = etree.SubElement(cell_el, p_tag)
+                    p_el.text = "TRUE" if val else "FALSE"
+                elif isinstance(val, (int, float, Decimal)):
+                    cell_el.set(val_type_attr, "float")
+                    cell_el.set(val_attr, str(val))
+                    p_el = etree.SubElement(cell_el, p_tag)
+                    p_el.text = str(val)
+                else:
+                    cell_el.set(val_type_attr, "string")
+                    for line in str(val).split("\n"):
+                        p_el = etree.SubElement(cell_el, p_tag)
+                        p_el.text = line
+            self._table_el.insert(insert_idx, row_el)
+            insert_idx += 1
+
+        new_content = etree.tostring(self._root, xml_declaration=True, encoding="UTF-8")
+
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf_out:
+            for info, data in self._entries:
+                if info.filename == "mimetype":
+                    zf_out.writestr("mimetype", data, compress_type=zipfile.ZIP_STORED)
+            for info, data in self._entries:
+                if info.filename == "mimetype":
+                    continue
+                payload = new_content if info.filename == "content.xml" else data
+                zf_out.writestr(info.filename, payload, compress_type=zipfile.ZIP_DEFLATED)
+
+        Path(path).write_bytes(buf.getvalue())
+
+
+def load_spreadsheet(path: Path):
+    ext = path.suffix.lower()
+    if ext == ".xlsx":
+        return load_workbook(path)
+    if ext == ".ods":
+        return ODSWorkbook(path)
+    raise RuntimeError("Please select an .xlsx or .ods workbook. The selected workbook is updated in place.")
 
 
 class PITCBillScraper:
@@ -644,9 +926,9 @@ class PITCBillScraper:
             return {"_account": account, "scrape_status": f"error: {exc}"}
 
     def update_workbook(self, path, progress=None, stop_event=None):
-        if path.suffix.lower() != ".xlsx":
-            raise RuntimeError("Please select an .xlsx workbook. The selected workbook is updated in place.")
-        workbook = load_workbook(path)
+        if path.suffix.lower() not in SUPPORTED_EXTENSIONS:
+            raise RuntimeError("Please select an .xlsx or .ods workbook. The selected workbook is updated in place.")
+        workbook = load_spreadsheet(path)
         sheet = workbook.active
 
         # 1. Read existing headers and existing rows into record dictionaries
@@ -720,6 +1002,8 @@ class PITCBillScraper:
         # 4. Write data strictly by column name - eliminating column shifting completely
         if sheet.max_column > len(final_headers):
             sheet.delete_cols(len(final_headers) + 1, sheet.max_column - len(final_headers))
+        if sheet.max_row > len(row_records) + 1:
+            sheet.delete_rows(len(row_records) + 2, sheet.max_row - (len(row_records) + 1))
 
         for col_idx, h in enumerate(final_headers, 1):
             sheet.cell(1, col_idx).value = h
@@ -777,7 +1061,7 @@ class BillScraperApp(tk.Tk):
         self.stop_event = threading.Event()
         self.input_var = tk.StringVar()
         self.delay_var = tk.DoubleVar(value=2.0)
-        self.status_var = tk.StringVar(value="Ready. Choose an Excel (.xlsx) file containing AC numbers in Column A.")
+        self.status_var = tk.StringVar(value="Ready. Choose an Excel (.xlsx) or LibreOffice (.ods) file containing AC numbers in Column A.")
         self.total_var = tk.StringVar(value="0")
         self.ok_var = tk.StringVar(value="0")
         self.err_var = tk.StringVar(value="0")
@@ -803,7 +1087,7 @@ class BillScraperApp(tk.Tk):
         files_frame = ttk.LabelFrame(root, text=" Target Workbook ", padding=10)
         files_frame.pack(fill="x", pady=(0, 10))
 
-        ttk.Label(files_frame, text="Excel File (.xlsx):", font=(UI_FONT, 9, "bold")).grid(row=0, column=0, sticky="w", pady=4)
+        ttk.Label(files_frame, text="Workbook (.xlsx / .ods):", font=(UI_FONT, 9, "bold")).grid(row=0, column=0, sticky="w", pady=4)
         entry = ttk.Entry(files_frame, textvariable=self.input_var, font=(UI_FONT, 9))
         entry.grid(row=0, column=1, sticky="ew", padx=(8, 8), pady=4)
 
@@ -875,7 +1159,14 @@ class BillScraperApp(tk.Tk):
         self.open_btn.pack(side="right")
 
     def choose_input(self):
-        path = filedialog.askopenfilename(title="Choose Account Workbook", filetypes=[("Excel Workbook", "*.xlsx")])
+        path = filedialog.askopenfilename(
+            title="Choose Account Workbook",
+            filetypes=[
+                ("Spreadsheet Files", "*.xlsx *.ods"),
+                ("Excel Workbook", "*.xlsx"),
+                ("LibreOffice Calc (.ods)", "*.ods"),
+            ],
+        )
         if path:
             self.input_var.set(path)
             self.status_var.set(f"Selected: {Path(path).name}")
@@ -894,7 +1185,7 @@ class BillScraperApp(tk.Tk):
             except Exception as exc:
                 messagebox.showerror("Error", f"Failed to open folder: {exc}")
         else:
-            messagebox.showinfo("Select File", "Please select an Excel file first.")
+            messagebox.showinfo("Select File", "Please select a workbook file first.")
 
     def write_log(self, text, tag=None):
         self.log.configure(state="normal")
@@ -907,8 +1198,8 @@ class BillScraperApp(tk.Tk):
 
     def start(self):
         path = Path(self.input_var.get().strip())
-        if not path.is_file():
-            messagebox.showerror("Input Required", "Choose an existing .xlsx workbook first.")
+        if not path.is_file() or path.suffix.lower() not in SUPPORTED_EXTENSIONS:
+            messagebox.showerror("Input Required", "Choose an existing .xlsx or .ods workbook first.")
             return
 
         if not messagebox.askyesno(

@@ -15,7 +15,7 @@ AppName={#AppName}
 AppVersion={#AppVersion}
 AppPublisher={#AppPublisher}
 AppPublisherURL=mailto:tahir.naqash4@gmail.com
-AppSupportURL=https://wa.me/9233339962474
+AppSupportURL=https://wa.me/923339962474
 DefaultDirName={localappdata}\Programs\BillScrapper
 DisableDirPage=yes
 DefaultGroupName={#AppName}
@@ -30,6 +30,12 @@ WizardStyle=modern
 PrivilegesRequired=lowest
 CloseApplications=yes
 RestartApplications=no
+VersionInfoCompany={#AppPublisher}
+VersionInfoDescription={#AppName} Setup
+VersionInfoVersion={#AppVersion}
+VersionInfoProductName={#AppName}
+VersionInfoProductVersion={#AppVersion}
+VersionInfoCopyright=Copyright (C) 2026 {#AppPublisher}
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"

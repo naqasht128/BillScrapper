@@ -73,7 +73,7 @@ app.get(['/', '/health'], (req, res) => {
 // ====================================================================
 async function handleLicenseVerification(req, res, { isExplicitActivation = false } = {}) {
   try {
-    const { serial_key, device_id, os_info } = req.body || {};
+    const { serial_key, device_id, os_info, candidate_ids } = req.body || {};
 
     if (!serial_key || typeof serial_key !== 'string') {
       return res.status(400).json({
@@ -94,6 +94,13 @@ async function handleLicenseVerification(req, res, { isExplicitActivation = fals
     const cleanKey = serial_key.trim().toUpperCase();
     const cleanDeviceId = device_id.trim();
     const cleanOsInfo = (os_info && typeof os_info === 'string') ? os_info.trim() : 'Unknown OS';
+
+    const candidateIds = Array.isArray(candidate_ids) && candidate_ids.length > 0
+      ? candidate_ids.map(id => String(id).trim()).filter(Boolean)
+      : [cleanDeviceId];
+    if (!candidateIds.includes(cleanDeviceId)) {
+      candidateIds.unshift(cleanDeviceId);
+    }
 
     // 1. Fetch license from Supabase
     const { data: license, error: fetchErr } = await supabase
@@ -183,17 +190,23 @@ async function handleLicenseVerification(req, res, { isExplicitActivation = fals
       });
     }
 
-    const existingDevice = (devices || []).find(d => d.device_id === cleanDeviceId);
+    const existingDevice = (devices || []).find(d => candidateIds.includes(d.device_id));
 
     // Case A: Device is already registered to this license
     if (existingDevice) {
-      // Refresh last_active timestamp and OS info
+      // Refresh last_active timestamp and OS info, and seamlessly migrate legacy HWID to the modern standard HWID
+      const updatePayload = {
+        last_active: now.toISOString(),
+        os_info: cleanOsInfo
+      };
+      if (existingDevice.device_id !== cleanDeviceId) {
+        updatePayload.device_id = cleanDeviceId;
+        console.log(`[DEVICE MIGRATED] Key: ${cleanKey} | Upgraded HWID: ${existingDevice.device_id} -> ${cleanDeviceId}`);
+      }
+
       await supabase
         .from('license_devices')
-        .update({
-          last_active: now.toISOString(),
-          os_info: cleanOsInfo
-        })
+        .update(updatePayload)
         .eq('id', existingDevice.id);
 
       return res.json({

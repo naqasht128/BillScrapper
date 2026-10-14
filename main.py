@@ -20,9 +20,15 @@ import tempfile
 import threading
 import time
 import tkinter as tk
+import uuid
 import webbrowser
 import zipfile
 from datetime import datetime, timezone
+
+try:
+    import winreg
+except ImportError:
+    winreg = None
 from decimal import Decimal
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
@@ -1455,32 +1461,57 @@ class UpdateDialog(tk.Toplevel):
 # ====================================================================
 
 def get_device_id() -> str:
-    """Generate a persistent, unique hardware SHA-256 fingerprint for this machine."""
-    components = [sys.platform]
+    """
+    Returns a persistent, unique hardware identifier for this machine.
+    Uses Windows Registry MachineGuid as primary (64-bit and 32-bit views),
+    falling back to modern PowerShell CIM query for BIOS UUID (Windows 11 compatible,
+    even when WMIC is deprecated/removed), legacy WMIC, physical MAC node,
+    or Darwin/Linux machine UUID.
+    Guaranteed never to crash or flash console windows.
+    """
     if sys.platform == "win32":
-        # 1. MachineGuid from Windows Registry
+        # 1. Windows Registry MachineGuid (both 64-bit and 32-bit registry views)
+        for flag in [getattr(winreg, 'KEY_WOW64_64KEY', 0), getattr(winreg, 'KEY_WOW64_32KEY', 0), 0]:
+            try:
+                with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Cryptography", 0, winreg.KEY_READ | flag) as key:
+                    machine_guid, _ = winreg.QueryValueEx(key, "MachineGuid")
+                    if machine_guid and len(str(machine_guid).strip()) > 10:
+                        return str(machine_guid).strip().upper()
+            except Exception:
+                pass
+
+        # 2. Modern PowerShell CIM query for BIOS UUID (works reliably on Windows 10 & 11)
         try:
-            import winreg
-            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Cryptography") as key:
-                guid, _ = winreg.QueryValueEx(key, "MachineGuid")
-                if guid:
-                    components.append(str(guid).strip().lower())
+            cmd = ["powershell", "-NoProfile", "-Command", "(Get-CimInstance Win32_ComputerSystemProduct).UUID"]
+            creation_flags = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
+            output = subprocess.check_output(cmd, creationflags=creation_flags, timeout=5).decode(errors="ignore").strip()
+            if '-' in output and len(output) >= 30:
+                return output.upper()
         except Exception:
             pass
 
-        # 2. Motherboard / BIOS UUID via WMIC
+        # 3. Legacy WMIC BIOS UUID (for older Windows versions)
         try:
-            out = subprocess.check_output(
-                ["wmic", "csproduct", "get", "uuid"],
-                stderr=subprocess.DEVNULL,
-                text=True,
-                timeout=2,
-            )
-            lines = [clean(l) for l in out.splitlines() if clean(l)]
-            if len(lines) >= 2 and lines[1]:
-                components.append(lines[1].strip().lower())
+            cmd = ["wmic", "csproduct", "get", "uuid"]
+            creation_flags = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
+            output = subprocess.check_output(cmd, creationflags=creation_flags, timeout=4).decode(errors="ignore").splitlines()
+            for line in output:
+                clean_l = line.strip()
+                if '-' in clean_l and len(clean_l) >= 30:
+                    return clean_l.upper()
         except Exception:
             pass
+
+        # 4. Fallback to physical MAC address
+        try:
+            import uuid
+            mac = uuid.getnode()
+            if (mac >> 40) % 2 == 0:
+                return f"MAC-{hex(mac)[2:].upper()}"
+        except Exception:
+            pass
+
+        return "UNKNOWN-HWID-WIN"
 
     elif sys.platform == "darwin":
         try:
@@ -1488,11 +1519,11 @@ def get_device_id() -> str:
                 ["ioreg", "-rd1", "-c", "IOPlatformExpertDevice"],
                 stderr=subprocess.DEVNULL,
                 text=True,
-                timeout=2,
+                timeout=3,
             )
             m = re.search(r'"IOPlatformUUID"\s*=\s*"([^"]+)"', out)
             if m:
-                components.append(m.group(1).strip().lower())
+                return m.group(1).strip().upper()
         except Exception:
             pass
 
@@ -1504,12 +1535,41 @@ def get_device_id() -> str:
                     with open(path, "r", encoding="utf-8") as f:
                         val = f.read().strip()
                         if val:
-                            components.append(val.lower())
-                            break
+                            return val.upper()
                 except Exception:
                     pass
 
-    # Fallback to MAC node if valid
+    # Generic fallback using MAC node
+    try:
+        import uuid
+        mac = uuid.getnode()
+        return f"FALLBACK-{hex(mac)[2:].upper()}"
+    except Exception:
+        pass
+
+    return "UNKNOWN-DEVICE-ID"
+
+
+def get_legacy_device_id() -> str:
+    """Generate legacy SHA-256 fingerprint for grandfathered activations."""
+    components = [sys.platform]
+    if sys.platform == "win32":
+        try:
+            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Cryptography") as key:
+                guid, _ = winreg.QueryValueEx(key, "MachineGuid")
+                if guid:
+                    components.append(str(guid).strip().lower())
+        except Exception:
+            pass
+        try:
+            cmd = ["wmic", "csproduct", "get", "uuid"]
+            creation_flags = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
+            out = subprocess.check_output(cmd, creationflags=creation_flags, timeout=3).decode(errors="ignore")
+            lines = [l.strip() for l in out.splitlines() if l.strip()]
+            if len(lines) >= 2 and lines[1]:
+                components.append(lines[1].strip().lower())
+        except Exception:
+            pass
     try:
         import uuid
         node = uuid.getnode()
@@ -1517,9 +1577,21 @@ def get_device_id() -> str:
             components.append(str(node))
     except Exception:
         pass
-
-    raw = "|".join(components) if len(components) > 1 else f"fallback_{sys.platform}_{os.getlogin()}"
+    raw = "|".join(components) if len(components) > 1 else f"fallback_{sys.platform}"
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def get_candidate_device_ids() -> list[str]:
+    """Return all valid device IDs for this machine: [primary_id, legacy_hash]."""
+    primary = get_device_id()
+    candidates = [primary]
+    try:
+        legacy = get_legacy_device_id()
+        if legacy and legacy not in candidates:
+            candidates.append(legacy)
+    except Exception:
+        pass
+    return candidates
 
 
 def get_os_info() -> str:
@@ -1563,34 +1635,65 @@ def save_local_license(data: dict):
         pass
 
 
-def verify_license_remote(serial_key: str, device_id: str) -> dict:
+def verify_license_remote(serial_key: str, device_id: str, candidate_ids: list[str] | None = None) -> dict:
     """Check license status with Render Supabase API."""
     url = f"{LICENSE_API_URL.rstrip('/')}/api/verify"
+    c_ids = candidate_ids or [device_id]
     payload = {
         "serial_key": serial_key.strip().upper(),
         "device_id": device_id,
+        "candidate_ids": c_ids,
         "os_info": get_os_info(),
     }
-    resp = requests.post(url, json=payload, timeout=12)
     try:
-        return resp.json()
-    except Exception:
-        return {"valid": False, "status": "network_error", "message": f"Server HTTP {resp.status_code}"}
+        resp = requests.post(url, json=payload, timeout=12)
+        try:
+            data = resp.json()
+        except Exception:
+            data = {"valid": False, "status": "network_error", "message": f"Server HTTP {resp.status_code}"}
+
+        if data.get("valid"):
+            return data
+
+        # If server returned limit_reached or not valid on primary ID, check legacy fallback ID
+        if data.get("status") in ("limit_reached", "invalid") and len(c_ids) > 1:
+            for alt_id in c_ids[1:]:
+                alt_payload = {
+                    "serial_key": serial_key.strip().upper(),
+                    "device_id": alt_id,
+                    "os_info": get_os_info(),
+                }
+                try:
+                    alt_resp = requests.post(url, json=alt_payload, timeout=12)
+                    alt_data = alt_resp.json()
+                    if alt_data.get("valid"):
+                        return alt_data
+                except Exception:
+                    pass
+
+        return data
+    except Exception as e:
+        return {"valid": False, "status": "network_error", "message": f"Connection error: {e}"}
 
 
-def activate_license_remote(serial_key: str, device_id: str) -> dict:
+def activate_license_remote(serial_key: str, device_id: str, candidate_ids: list[str] | None = None) -> dict:
     """Activate license with Render Supabase API."""
     url = f"{LICENSE_API_URL.rstrip('/')}/api/activate"
+    c_ids = candidate_ids or [device_id]
     payload = {
         "serial_key": serial_key.strip().upper(),
         "device_id": device_id,
+        "candidate_ids": c_ids,
         "os_info": get_os_info(),
     }
-    resp = requests.post(url, json=payload, timeout=12)
     try:
-        return resp.json()
-    except Exception:
-        return {"valid": False, "status": "network_error", "message": f"Server HTTP {resp.status_code}"}
+        resp = requests.post(url, json=payload, timeout=12)
+        try:
+            return resp.json()
+        except Exception:
+            return {"valid": False, "status": "network_error", "message": f"Server HTTP {resp.status_code}"}
+    except Exception as e:
+        return {"valid": False, "status": "network_error", "message": f"Connection error: {e}"}
 
 
 def format_expiry_date(iso_str: str | None) -> str:
@@ -1741,9 +1844,21 @@ class LicenseGateDialog(tk.Toplevel):
         hw_row = ttk.Frame(hw_card, style="Card.TFrame")
         hw_row.pack(fill="x", pady=(4, 0))
 
-        short_id = f"{self.device_id[:16]}...{self.device_id[-8:]}"
-        self.hw_lbl = ttk.Label(hw_row, text=short_id, font=(MONO_FONT, 9), foreground=TEXT_MUTED, background=CARD_BG)
-        self.hw_lbl.pack(side="left", fill="x", expand=True)
+        self.hw_entry = tk.Entry(
+            hw_row,
+            font=(MONO_FONT, 9, "bold"),
+            bg=INPUT_BG,
+            fg="#4ec9b0",
+            insertbackground=TEXT_WHITE,
+            relief="flat",
+            justify="center",
+            highlightthickness=1,
+            highlightbackground=BORDER_COLOR,
+            highlightcolor=ACCENT_GREEN,
+        )
+        self.hw_entry.insert(0, self.device_id)
+        self.hw_entry.configure(state="readonly")
+        self.hw_entry.pack(side="left", fill="x", expand=True, ipady=4, padx=(0, 8))
 
         self.copy_id_btn = tk.Button(
             hw_row,
@@ -1752,11 +1867,11 @@ class LicenseGateDialog(tk.Toplevel):
             fg=TEXT_MAIN,
             activebackground=BTN_SEC_HOVER,
             activeforeground=TEXT_WHITE,
-            font=(UI_FONT, 8),
+            font=(UI_FONT, 8, "bold"),
             relief="flat",
             cursor="hand2",
-            padx=8,
-            pady=2,
+            padx=10,
+            pady=3,
             command=self._copy_device_id,
         )
         self.copy_id_btn.pack(side="right")
@@ -1872,7 +1987,8 @@ class LicenseGateDialog(tk.Toplevel):
         contact_card = ttk.Frame(self.tab_buy, style="Card.TFrame", padding=(16, 12))
         contact_card.pack(fill="both", expand=True, pady=(0, 10))
 
-        ttk.Label(contact_card, text="CONTACT FOR PURCHASE & ACTIVATION", style="CardTitle.TLabel", font=(UI_FONT, 9, "bold")).pack(anchor="w", pady=(0, 8))
+        ttk.Label(contact_card, text="CONTACT FOR PURCHASE & ACTIVATION", style="CardTitle.TLabel", font=(UI_FONT, 9, "bold")).pack(anchor="w", pady=(0, 4))
+        ttk.Label(contact_card, text="Send your Machine Hardware ID via WhatsApp or Email to receive your key.", style="Sub.TLabel", font=(UI_FONT, 8)).pack(anchor="w", pady=(0, 8))
 
         # WhatsApp Row
         wa_frame = tk.Frame(contact_card, bg=INPUT_BG, padx=10, pady=8, highlightthickness=1, highlightbackground=BORDER_COLOR)
@@ -1887,8 +2003,9 @@ class LicenseGateDialog(tk.Toplevel):
         wa_text_box = tk.Frame(wa_frame, bg=INPUT_BG)
         wa_text_box.pack(side="left", fill="x", expand=True)
         tk.Label(wa_text_box, text="WhatsApp", font=(UI_FONT, 8, "bold"), fg="#25D366", bg=INPUT_BG).pack(anchor="w")
-        tk.Label(wa_text_box, text="033339962474", font=(UI_FONT, 9, "bold"), fg=TEXT_WHITE, bg=INPUT_BG).pack(anchor="w")
+        tk.Label(wa_text_box, text="03339962474", font=(UI_FONT, 9, "bold"), fg=TEXT_WHITE, bg=INPUT_BG).pack(anchor="w")
 
+        wa_msg = f"Hello,%20I%20would%20like%20to%20purchase%20Bill%20Scrapper%20license.%20My%20Hardware%20ID%20is:%20{self.device_id}"
         wa_chat_btn = tk.Button(
             wa_frame,
             text="💬 Chat",
@@ -1901,7 +2018,7 @@ class LicenseGateDialog(tk.Toplevel):
             cursor="hand2",
             padx=8,
             pady=3,
-            command=lambda: webbrowser.open("https://wa.me/9233339962474"),
+            command=lambda: webbrowser.open(f"https://wa.me/923339962474?text={wa_msg}"),
         )
         wa_chat_btn.pack(side="right", padx=(4, 0))
 
@@ -1917,7 +2034,7 @@ class LicenseGateDialog(tk.Toplevel):
             cursor="hand2",
             padx=8,
             pady=3,
-            command=lambda: self._copy_text("033339962474", wa_copy_btn),
+            command=lambda: self._copy_text("03339962474", wa_copy_btn),
         )
         wa_copy_btn.pack(side="right")
 
@@ -1935,6 +2052,8 @@ class LicenseGateDialog(tk.Toplevel):
         tk.Label(gm_text_box, text="Gmail / Email", font=(UI_FONT, 8, "bold"), fg="#EA4335", bg=INPUT_BG).pack(anchor="w")
         tk.Label(gm_text_box, text="tahir.naqash4@gmail.com", font=(UI_FONT, 9, "bold"), fg=TEXT_WHITE, bg=INPUT_BG).pack(anchor="w")
 
+        gm_subject = "Bill%20Scrapper%20License%20Purchase"
+        gm_body = f"Hello,%0A%0AI%20would%20like%20to%20purchase%20a%20Bill%20Scrapper%20license.%0A%0AMy%20Hardware%20ID%20is:%20{self.device_id}%0A"
         gm_mail_btn = tk.Button(
             gm_frame,
             text="✉ Email",
@@ -1947,7 +2066,7 @@ class LicenseGateDialog(tk.Toplevel):
             cursor="hand2",
             padx=8,
             pady=3,
-            command=lambda: webbrowser.open("mailto:tahir.naqash4@gmail.com"),
+            command=lambda: webbrowser.open(f"mailto:tahir.naqash4@gmail.com?subject={gm_subject}&body={gm_body}"),
         )
         gm_mail_btn.pack(side="right", padx=(4, 0))
 
@@ -2025,7 +2144,7 @@ class LicenseGateDialog(tk.Toplevel):
 
         def worker():
             try:
-                res = activate_license_remote(key, self.device_id)
+                res = activate_license_remote(key, self.device_id, candidate_ids=get_candidate_device_ids())
                 self.queue.put(("result", res))
             except Exception as e:
                 self.queue.put(("error", str(e)))
@@ -2072,7 +2191,7 @@ class AboutDialog(tk.Toplevel):
         self.transient(parent)
         self.grab_set()
 
-        w, h = 420, 390
+        w, h = 420, 410
         px = parent.winfo_rootx() + (parent.winfo_width() // 2) - (w // 2)
         py = parent.winfo_rooty() + (parent.winfo_height() // 2) - (h // 2)
         self.geometry(f"{w}x{h}+{max(0, px)}+{max(0, py)}")
@@ -2118,6 +2237,15 @@ class AboutDialog(tk.Toplevel):
             command=self._copy_serial_key,
         )
         self.copy_key_btn.pack(side="right")
+
+        hw_lbl = ttk.Label(
+            lic_card,
+            text=f"Hardware ID: {get_device_id()}",
+            font=(MONO_FONT, 8),
+            foreground=TEXT_MUTED,
+            background=CARD_BG,
+        )
+        hw_lbl.pack(anchor="w", pady=(0, 2))
 
         plan_lbl = ttk.Label(
             lic_card,
@@ -2357,7 +2485,8 @@ class BillScraperApp(tk.Tk):
         if local_lic and local_lic.get("serial_key"):
             key = local_lic["serial_key"]
             try:
-                res = verify_license_remote(key, device_id)
+                candidate_ids = get_candidate_device_ids()
+                res = verify_license_remote(key, device_id, candidate_ids=candidate_ids)
                 if res.get("valid"):
                     local_lic.update(res)
                     save_local_license(local_lic)

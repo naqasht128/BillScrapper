@@ -359,6 +359,179 @@ app.post('/api/admin/generate', async (req, res) => {
   }
 });
 
+// ====================================================================
+// SECURE AUTO-UPDATES (Keeps GitHub Repository 100% Private!)
+// ====================================================================
+
+const GITHUB_REPO = process.env.GITHUB_REPO || 'naqasht128/BillScrapper';
+const GITHUB_TOKEN = process.env.GITHUB_TOKEN || '';
+
+/**
+ * GET /api/updates/latest
+ * Returns latest version metadata for desktop app without exposing GitHub repo
+ */
+app.get('/api/updates/latest', async (req, res) => {
+  try {
+    // 1. If GITHUB_TOKEN is configured in Vercel, query GitHub dynamically
+    if (GITHUB_TOKEN) {
+      try {
+        const ghUrl = `https://api.github.com/repos/${GITHUB_REPO}/releases/latest`;
+        const ghRes = await fetch(ghUrl, {
+          headers: {
+            'User-Agent': 'BillScrapper-LicenseServer',
+            'Authorization': `Bearer ${GITHUB_TOKEN}`,
+            'Accept': 'application/vnd.github.v3+json'
+          }
+        });
+
+        if (ghRes.ok) {
+          const data = await ghRes.json();
+          const tag = (data.tag_name || '').replace(/^v/, '');
+          const assets = data.assets || [];
+
+          // Prefer Setup Installer first, then fallback to portable .exe
+          const setupAsset = assets.find(a => a.name.toLowerCase().includes('setup') && a.name.toLowerCase().endsWith('.exe'))
+            || assets.find(a => a.name.toLowerCase().endsWith('.exe'));
+
+          if (setupAsset) {
+            const host = req.get('host');
+            const proto = req.headers['x-forwarded-proto'] || 'https';
+            return res.json({
+              version: tag,
+              file_name: setupAsset.name,
+              download_url: `${proto}://${host}/api/updates/download?asset_id=${setupAsset.id}`,
+              release_notes: data.body || 'New update available with performance enhancements.'
+            });
+          }
+        }
+      } catch (ghErr) {
+        console.warn('[GH FETCH WARN] Failed to fetch from GitHub API:', ghErr.message);
+      }
+    }
+
+    // 2. Fallback: Check Supabase table 'app_updates' if present
+    try {
+      const { data: updateRecord } = await supabase
+        .from('app_updates')
+        .select('*')
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (updateRecord && updateRecord.version) {
+        return res.json({
+          version: updateRecord.version.replace(/^v/, ''),
+          file_name: updateRecord.file_name || 'BillScrapper-Setup.exe',
+          download_url: updateRecord.download_url,
+          release_notes: updateRecord.release_notes || 'New update available.'
+        });
+      }
+    } catch (dbErr) {
+      // Table may not exist yet, continue to default fallback
+    }
+
+    // 3. Fallback to environment variables
+    const fallbackVersion = (process.env.LATEST_VERSION || '1.2.0').replace(/^v/, '');
+    const fallbackUrl = process.env.LATEST_DOWNLOAD_URL || '';
+    return res.json({
+      version: fallbackVersion,
+      file_name: 'BillScrapper-Setup.exe',
+      download_url: fallbackUrl,
+      release_notes: 'Latest version of Bill Scrapper.'
+    });
+
+  } catch (err) {
+    console.error('[UPDATES ERROR]', err);
+    return res.status(500).json({ error: 'Failed to check for updates' });
+  }
+});
+
+/**
+ * GET /api/updates/download
+ * Proxies/streams the installer file from private GitHub Release securely
+ */
+app.get('/api/updates/download', async (req, res) => {
+  try {
+    const { asset_id } = req.query;
+
+    if (asset_id && GITHUB_TOKEN) {
+      const assetUrl = `https://api.github.com/repos/${GITHUB_REPO}/releases/assets/${asset_id}`;
+      const ghRes = await fetch(assetUrl, {
+        headers: {
+          'User-Agent': 'BillScrapper-LicenseServer',
+          'Authorization': `Bearer ${GITHUB_TOKEN}`,
+          'Accept': 'application/octet-stream'
+        },
+        redirect: 'follow'
+      });
+
+      if (!ghRes.ok) {
+        return res.status(ghRes.status).send('Failed to fetch update asset from storage.');
+      }
+
+      const contentType = ghRes.headers.get('content-type') || 'application/octet-stream';
+      const contentLength = ghRes.headers.get('content-length');
+      res.setHeader('Content-Type', contentType);
+      if (contentLength) res.setHeader('Content-Length', contentLength);
+      res.setHeader('Content-Disposition', 'attachment; filename="BillScrapper-Setup.exe"');
+
+      const arrayBuffer = await ghRes.arrayBuffer();
+      return res.send(Buffer.from(arrayBuffer));
+    }
+
+    // Direct URL redirect fallback
+    const directUrl = process.env.LATEST_DOWNLOAD_URL;
+    if (directUrl) {
+      return res.redirect(directUrl);
+    }
+
+    return res.status(404).send('Download file not found.');
+  } catch (err) {
+    console.error('[DOWNLOAD PROXY ERROR]', err);
+    return res.status(500).send('Error downloading update file.');
+  }
+});
+
+/**
+ * POST /api/admin/set-update
+ * Allows admin to register or update the latest version link in Supabase
+ */
+app.post('/api/admin/set-update', async (req, res) => {
+  try {
+    const adminSecret = req.headers['x-admin-secret'];
+    if (!ADMIN_SECRET || adminSecret !== ADMIN_SECRET) {
+      return res.status(401).json({ error: 'Unauthorized: Invalid admin secret' });
+    }
+
+    const { version, download_url, file_name, release_notes } = req.body || {};
+    if (!version) {
+      return res.status(400).json({ error: 'Version is required.' });
+    }
+
+    const cleanVer = String(version).trim().replace(/^v/, '');
+
+    const { error } = await supabase
+      .from('app_updates')
+      .upsert({
+        version: cleanVer,
+        download_url: download_url || '',
+        file_name: file_name || 'BillScrapper-Setup.exe',
+        release_notes: release_notes || `Release v${cleanVer}`,
+        updated_at: new Date().toISOString()
+      }, { onConflict: 'version' });
+
+    if (error) {
+      console.error('[DB ERROR] set-update failed:', error);
+      return res.status(500).json({ error: error.message });
+    }
+
+    return res.json({ success: true, message: `Update v${cleanVer} registered successfully!` });
+  } catch (err) {
+    console.error('[ADMIN SET UPDATE ERROR]', err);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 // Start listening locally / standalone
 if (require.main === module) {
   app.listen(PORT, () => {

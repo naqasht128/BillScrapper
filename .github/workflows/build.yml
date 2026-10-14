@@ -32,7 +32,27 @@ jobs:
       - name: Build Windows Executable
         run: pyinstaller BillScrapper.spec --clean
 
-      - name: Upload Windows .exe Artifact
+      - name: Build Windows Setup Installer (Inno Setup)
+        run: |
+          $ver = "${{ github.ref_type == 'tag' && github.ref_name || '1.2.0' }}".TrimStart("v")
+          $isccCmd = Get-Command iscc -ErrorAction SilentlyContinue
+          if ($isccCmd) {
+              $isccPath = $isccCmd.Source
+          } elseif (Test-Path "C:\Program Files (x86)\Inno Setup 6\iscc.exe") {
+              $isccPath = "C:\Program Files (x86)\Inno Setup 6\iscc.exe"
+          } else {
+              choco install innosetup --no-progress -y
+              $isccPath = "C:\Program Files (x86)\Inno Setup 6\iscc.exe"
+          }
+          & $isccPath "/DAppVersion=$ver" installer.iss
+
+      - name: Upload Windows Setup Installer Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: BillScrapper-Windows-Setup
+          path: dist/BillScrapper-Setup.exe
+
+      - name: Upload Windows Standalone .exe Artifact
         uses: actions/upload-artifact@v4
         with:
           name: BillScrapper-Windows-exe
@@ -77,7 +97,13 @@ jobs:
     permissions:
       contents: write
     steps:
-      - name: Download Windows Artifact
+      - name: Download Windows Setup Installer Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: BillScrapper-Windows-Setup
+          path: release-assets/
+
+      - name: Download Windows Standalone Artifact
         uses: actions/download-artifact@v4
         with:
           name: BillScrapper-Windows-exe
@@ -94,6 +120,7 @@ jobs:
         with:
           tag_name: ${{ github.ref_type == 'tag' && github.ref_name || github.event.inputs.tag_name }}
           files: |
+            release-assets/BillScrapper-Setup.exe
             release-assets/BillScrapper.exe
             release-assets/BillScrapper
           draft: false

@@ -1,0 +1,49 @@
+; Bill Scrapper - Inno Setup Installer Script
+; Produces a modern, professional, per-user Windows Setup Wizard
+
+#ifndef AppVersion
+#define AppVersion "1.2.0"
+#endif
+
+#define AppName "Bill Scrapper"
+#define AppPublisher "TN Developers Co."
+#define AppExeName "BillScrapper.exe"
+
+[Setup]
+AppId={{D37F2C5A-8E9B-4D1C-A63E-5B9C8E7D1A2F}
+AppName={#AppName}
+AppVersion={#AppVersion}
+AppPublisher={#AppPublisher}
+AppPublisherURL=mailto:tahir.naqash4@gmail.com
+AppSupportURL=https://wa.me/9233339962474
+DefaultDirName={userappdata}\Programs\BillScrapper
+DisableDirPage=yes
+DefaultGroupName={#AppName}
+DisableProgramGroupPage=yes
+OutputDir=dist
+OutputBaseFilename=BillScrapper-Setup
+SetupIconFile=assets\billscrapper.ico
+UninstallDisplayIcon={app}\{#AppExeName}
+Compression=lzma2/ultra64
+SolidCompression=yes
+WizardStyle=modern
+PrivilegesRequired=lowest
+CloseApplications=yes
+RestartApplications=no
+
+[Languages]
+Name: "english"; MessagesFile: "compiler:Default.isl"
+
+[Tasks]
+Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"
+
+[Files]
+Source: "dist\{#AppExeName}"; DestDir: "{app}"; Flags: ignoreversion
+Source: "assets\*"; DestDir: "{app}\assets"; Flags: ignoreversion recursesubdirs createallsubdirs
+
+[Icons]
+Name: "{autoprograms}\{#AppName}"; Filename: "{app}\{#AppExeName}"
+Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExeName}"; Tasks: desktopicon
+
+[Run]
+Filename: "{app}\{#AppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(AppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent

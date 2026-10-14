@@ -153,15 +153,36 @@ def main():
     run_cmd(["git", "push", "origin", tag_name, "--force"])
     print(f"  ✔ Tag '{tag_name}' pushed to GitHub.")
 
+    # 6. Optional: Register release on Vercel backend
+    api_url = os.environ.get("LICENSE_API_URL", "https://bill-scrapper.vercel.app").rstrip("/")
+    admin_secret = os.environ.get("ADMIN_SECRET", "")
+    if admin_secret:
+        try:
+            import requests
+            set_url = f"{api_url}/api/admin/set-update"
+            r = requests.post(
+                set_url,
+                json={"version": target_ver, "release_notes": msg},
+                headers={"x-admin-secret": admin_secret},
+                timeout=5
+            )
+            if r.status_code == 200:
+                print(f"  ✔ Update registered with Vercel API: v{target_ver}")
+        except Exception:
+            pass
+
     print("\n" + "=" * 60)
     print("🎉  RELEASE PIPELINE TRIGGERED SUCCESSFULLY!")
     print("=" * 60)
     print(f"\nWhat happens next:")
-    print(f"1. GitHub Actions has started building BillScrapper.exe for Windows and Linux ARM64.")
-    print(f"2. Upon completion, GitHub Actions will publish Release {tag_name} with the new .exe.")
+    print(f"1. GitHub Actions has started building BillScrapper-Setup.exe (Windows Installer).")
+    print(f"2. Upon completion, GitHub Actions will publish Release {tag_name} with:")
+    print(f"   • BillScrapper-Setup.exe  (Professional Inno Setup Windows Installer)")
+    print(f"   • BillScrapper.exe        (Standalone Portable Executable)")
+    print(f"   • BillScrapper            (Linux ARM64 Binary)")
     print(f"3. All users who open their installed Bill Scrapper app will automatically receive the update banner:")
     print(f"   '🚀 Update Available: Version {tag_name} is ready to install!'")
-    print(f"4. Users click 'Update Now' to automatically download and upgrade in-place.\n")
+    print(f"4. Users click 'Update Now' to automatically download and upgrade in-place silently.\n")
     print("💡 Tip: To verify your build progress, visit:")
     print("   https://github.com/naqasht128/BillScrapper/actions\n")
 

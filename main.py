@@ -1344,8 +1344,29 @@ class UpdateDialog(tk.Toplevel):
         self.cancel_btn = ttk.Button(btn_box, text="Cancel", command=self.cancel)
         self.cancel_btn.pack(side="right")
 
+        self.queue = queue.Queue()
         self.protocol("WM_DELETE_WINDOW", self.cancel)
+        self._poll_queue()
         threading.Thread(target=self._download_worker, daemon=True).start()
+
+    def _poll_queue(self):
+        try:
+            while True:
+                msg = self.queue.get_nowait()
+                kind = msg[0]
+                if kind == "progress":
+                    self._update_progress(*msg[1:])
+                elif kind == "complete":
+                    self._on_download_complete()
+                elif kind == "error":
+                    self._on_error(msg[1])
+                elif kind == "cancelled":
+                    if self.winfo_exists():
+                        self.destroy()
+        except queue.Empty:
+            pass
+        if self.winfo_exists():
+            self.after(50, self._poll_queue)
 
     def cancel(self):
         self.cancelled = True
@@ -1375,7 +1396,7 @@ class UpdateDialog(tk.Toplevel):
                                 pct = int((downloaded / total) * 100)
                                 d_mb = downloaded / (1024 * 1024)
                                 t_mb = total / (1024 * 1024)
-                                self.after(0, self._update_progress, pct, d_mb, t_mb)
+                                self.queue.put(("progress", pct, d_mb, t_mb))
 
             if self.cancelled:
                 try:
@@ -1383,12 +1404,12 @@ class UpdateDialog(tk.Toplevel):
                         os.remove(tpath)
                 except Exception:
                     pass
-                self.after(0, self.destroy)
+                self.queue.put(("cancelled",))
                 return
 
-            self.after(0, self._on_download_complete)
+            self.queue.put(("complete",))
         except Exception as exc:
-            self.after(0, self._on_error, str(exc))
+            self.queue.put(("error", str(exc)))
 
     def _update_progress(self, pct, downloaded_mb, total_mb):
         if not self.winfo_exists():
@@ -1608,6 +1629,7 @@ class LicenseGateDialog(tk.Toplevel):
         self.activated = False
         self.license_info: dict | None = None
         self.device_id = get_device_id()
+        self.queue = queue.Queue()
 
         # Exit application cleanly if closed without activation
         self.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -1630,6 +1652,20 @@ class LicenseGateDialog(tk.Toplevel):
             pass
 
         self._build_ui(initial_error)
+        self._poll_queue()
+
+    def _poll_queue(self):
+        try:
+            while True:
+                msg_type, payload = self.queue.get_nowait()
+                if msg_type == "result":
+                    self._on_activation_result(payload)
+                elif msg_type == "error":
+                    self._on_activation_error(payload)
+        except queue.Empty:
+            pass
+        if self.winfo_exists():
+            self.after(50, self._poll_queue)
 
     def _build_ui(self, initial_error: str):
         self.container = ttk.Frame(self, style="Root.TFrame", padding=(22, 16, 22, 16))
@@ -1953,13 +1989,13 @@ class LicenseGateDialog(tk.Toplevel):
         self.clipboard_append(text)
         old_txt = btn.cget("text")
         btn.configure(text="✅ Copied!", fg="#4ec9b0")
-        self.after(2000, lambda: btn.configure(text=old_txt, fg=TEXT_MAIN))
+        self.after(2000, lambda: btn.configure(text=old_txt, fg=TEXT_MAIN) if self.winfo_exists() and btn.winfo_exists() else None)
 
     def _copy_device_id(self):
         self.clipboard_clear()
         self.clipboard_append(self.device_id)
         self.copy_id_btn.configure(text="✅ Copied!", fg="#4ec9b0")
-        self.after(2000, lambda: self.copy_id_btn.configure(text="📋 Copy ID", fg=TEXT_MAIN))
+        self.after(2000, lambda: self.copy_id_btn.configure(text="📋 Copy ID", fg=TEXT_MAIN) if self.winfo_exists() else None)
 
     def _set_status(self, text: str, color: str = TEXT_MUTED):
         self.status_var.set(text)
@@ -1978,33 +2014,39 @@ class LicenseGateDialog(tk.Toplevel):
         def worker():
             try:
                 res = activate_license_remote(key, self.device_id)
-                self.after(0, lambda: self._on_activation_result(res))
+                self.queue.put(("result", res))
             except Exception as e:
-                self.after(0, lambda: self._on_activation_error(str(e)))
+                self.queue.put(("error", str(e)))
 
         threading.Thread(target=worker, daemon=True).start()
 
     def _on_activation_result(self, res: dict):
+        if not self.winfo_exists():
+            return
         self.activate_btn.configure(state="normal", text="⚡  ACTIVATE LICENSE", bg=ACCENT_GREEN)
         if res.get("valid"):
             save_local_license(res)
             self.activated = True
             self.license_info = res
             self._set_status("✅ License activated successfully! Launching Bill Scrapper...", color="#89d185")
-            self.after(600, self.destroy)
+            self.after(600, self._finish_activation)
         else:
             msg = res.get("message") or "License activation failed."
             self._set_status(f"❌ {msg}", color="#f14c4c")
 
+    def _finish_activation(self):
+        if self.winfo_exists():
+            self.destroy()
+
     def _on_activation_error(self, err_msg: str):
+        if not self.winfo_exists():
+            return
         self.activate_btn.configure(state="normal", text="⚡  ACTIVATE LICENSE", bg=ACCENT_GREEN)
         self._set_status(f"❌ Connection error: {err_msg}", color="#f14c4c")
 
     def _on_close(self):
-        if not self.activated:
-            self.parent.destroy()
-            sys.exit(0)
-        else:
+        self.activated = False
+        if self.winfo_exists():
             self.destroy()
 
 
@@ -2128,7 +2170,7 @@ class AboutDialog(tk.Toplevel):
             self.clipboard_clear()
             self.clipboard_append(key)
             self.copy_key_btn.configure(text="✅ Copied!", fg="#4ec9b0")
-            self.after(2000, lambda: self.copy_key_btn.configure(text="📋 Copy", fg=TEXT_MAIN))
+            self.after(2000, lambda: self.copy_key_btn.configure(text="📋 Copy", fg=TEXT_MAIN) if self.winfo_exists() else None)
 
 
 class BillScraperApp(tk.Tk):
@@ -2282,7 +2324,11 @@ class BillScraperApp(tk.Tk):
         self.withdraw()
 
         if not self.ensure_licensed():
-            self.destroy()
+            try:
+                if self.winfo_exists():
+                    self.destroy()
+            except Exception:
+                pass
             return
 
         self.deiconify()
@@ -2667,4 +2713,9 @@ class BillScraperApp(tk.Tk):
 
 
 if __name__ == "__main__":
-    BillScraperApp().mainloop()
+    app = BillScraperApp()
+    try:
+        if getattr(app, "active_license", None) and app.winfo_exists():
+            app.mainloop()
+    except (tk.TclError, SystemExit):
+        pass

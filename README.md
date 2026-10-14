@@ -38,25 +38,29 @@ Desktop UI application to scrape PITC (PESCO) electricity bills from account/ref
    - `mdi_units_1 * 1250`
    - Calculates the estimated fixed charges billed on the invoice using `mdi_units_1` at Rs. 1,250 per kW for instant audit comparison.
 
-7. **`payment` and `payment_date`**:
+7. **`Current Bill` and `Total FPA`**:
+   - **`Current Bill`**: Extracted directly from the charges breakdown (`class="charges-bd-val"`). Written as numeric in Excel.
+   - **`Total FPA`**: Extracted from the charges breakdown (`class="charges-bd-val charges-bd-val--strong"`). Written as numeric in Excel.
+
+8. **`payment` and `payment_date`**:
    - Captures the bill's **Amount Paid** and **Payment Date** when payment information is available.
    - Positioned immediately after `grand_total`; unpaid bills remain blank in these columns.
 
-8. **Automatic Unit Separation**:
+9. **Automatic Unit Separation**:
    - Automatically separates Off-Peak `(O)` and Peak `(P)` or space-separated units in `kwh_units`, `kvarh_units`, and `mdi_units` into discrete columns (`_units_1`, `_units_2`).
 
-9. **Status Preservation & Clean Alignment**:
-   - The consumer's connection/meter status is captured in the `status` column.
-   - Excel rows are mapped strictly by column names to prevent any header shifting or data misalignment.
+10. **Status Preservation & Clean Alignment**:
+    - The consumer's connection/meter status is captured in the `status` column.
+    - Excel rows are mapped strictly by column names to prevent any header shifting or data misalignment.
 
-10. **`Remarks` Audit Column**:
+11. **`Remarks` Audit Column**:
     - Placed as the final column in the output.
     - Shows `Done` for successfully scraped bills, and `Bill not Found` if an account is invalid, missing, or encounters an error.
 
-11. **Modern Dark Mode UI**:
+12. **Modern Dark Mode UI**:
     - Sleek slate dark interface with real-time live execution logs, progress tracking, and Windows native immersive dark title bar support.
 
-12. **In-App Auto Updater**:
+13. **In-App Auto Updater**:
     - Automatically checks GitHub Releases for new updates in the background.
     - Displays an unobtrusive update banner with one-click download, self-replacement, and restart.
     - Includes a manual "Check for Updates" button and live download progress modal.

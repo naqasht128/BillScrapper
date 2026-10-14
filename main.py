@@ -40,9 +40,9 @@ DROP_LETTERS = {"B", "C", "E", "H", "K", "L", "M", "N", "P", "Q", "S"}
 DROP_RANGES = ((24, 50), (28, 55), (36, 64), (67, 67), (98, 214), (217, 244))  # X:AX, AB:BC, AJ:BL, BO, CT:HF and HI:IJ
 DROP_EXACT = {
     "reference_no", "consumer_id", "sub_division", "tariff_cat", "transformer",
-    "energy_charges", "taxes", "current_bill", "arrears", "installment",
+    "energy_charges", "taxes", "arrears", "installment",
     "tracking_id",
-    "total_electricity_charges", "net_electricity_charges", "total_fpa", "subsidies", "category", "26",
+    "total_electricity_charges", "net_electricity_charges", "subsidies", "category", "26",
     "kwh_units_44", "kwh_units_45", "kwh_units_46",
     "table_1_kwh_type_1",
     "table_1_kvarh_meter_1", "table_1_kvarh_meter_2", "table_1_kvarh_meter_3", "table_1_kvarh_meter_4",
@@ -81,6 +81,7 @@ def should_be_numeric(key):
     normalized = normalized_key(key).lower()
     if normalized in {
         "payment", "grand_total", "adjustments", "san_load",
+        "current bill", "current_bill", "total fpa", "total_fpa",
         "prv_cum_mdi_1", "prv_cum_mdi_2", "cum_mdi_1", "cum_mdi_2",
     }:
         return True
@@ -124,6 +125,10 @@ def normalized_key(value):
         "actual_fix_charges": "Actual_Fix_Charges",
         "in_bill_fix_charges": "In_Bill_Fix_Charges (Estimated)",
         "in_bill_fix_charges_estimated": "In_Bill_Fix_Charges (Estimated)",
+        "current_bill": "Current Bill",
+        "current bill": "Current Bill",
+        "total_fpa": "Total FPA",
+        "total fpa": "Total FPA",
         "kvarh_units": "kvarh_units_1",
         "mdi_units": "mdi_units_1",
         "scrape_status": "Remarks",
@@ -156,6 +161,8 @@ def is_preserved_meter_key(key):
             "diff_cum_mdi1", "diff_cum_mdi2",
             "actual mdi", "actual_mdi",
             "actual_fix_charges",
+            "current bill", "current_bill",
+            "total fpa", "total_fpa",
         }
     )
 
@@ -215,7 +222,10 @@ GENERAL_LABELS = {
     "name and address": "name_address",
     "energy charges": "energy_charges",
     "taxes": "taxes",
-    "current bill": "current_bill",
+    "current bill": "Current Bill",
+    "current bill amount": "Current Bill",
+    "total fpa": "Total FPA",
+    "total f p a": "Total FPA",
     "arrears": "arrears",
     "installment": "installment",
     "adjustment": "adjustments",
@@ -240,7 +250,7 @@ def canonical_label(value):
 def order_output_headers(headers):
     """Keep tariff/san-load stable and keep meter readings under fixed names."""
     first = [
-        "AC No.", "tariff", "san_load", "status", "adjustments", "grand_total",
+        "AC No.", "tariff", "san_load", "status", "Current Bill", "Total FPA", "adjustments", "grand_total",
         "payment", "payment_date",
         "ntn_no", "bill_month", "name_address", "due_date",
     ]
@@ -792,6 +802,69 @@ class PITCBillScraper:
                 if k not in output:
                     output[k] = value
 
+    @staticmethod
+    def put_charges_breakdown(output, soup):
+        """Extract Current Bill and Total FPA from charges breakdown."""
+        # 1. Look for .charges-bd-row containers
+        for row in soup.select(".charges-bd-row, tr"):
+            row_text = clean(row.get_text(" ")).upper()
+
+            # Current Bill (class=charges-bd-val)
+            if "CURRENT BILL" in row_text:
+                val_el = row.select_one(".charges-bd-val")
+                if val_el:
+                    v = clean(val_el.get_text(" "))
+                    if v and re.search(r"\d", v):
+                        output["Current Bill"] = v
+                else:
+                    bits = [clean(x) for x in row.stripped_strings if clean(x)]
+                    if len(bits) >= 2 and re.search(r"\d", bits[-1]):
+                        output["Current Bill"] = bits[-1]
+
+            # Total FPA (class=charges-bd-val charges-bd-val--strong)
+            if any(term in row_text for term in ("TOTAL F.P.A", "TOTAL FPA", "TOTAL F P A", "TOTAL FUEL PRICE")):
+                val_el = (
+                    row.select_one(".charges-bd-val.charges-bd-val--strong")
+                    or row.select_one(".charges-bd-val--strong")
+                    or row.select_one(".charges-bd-val")
+                )
+                if val_el:
+                    v = clean(val_el.get_text(" "))
+                    if v and re.search(r"\d", v):
+                        output["Total FPA"] = v
+                else:
+                    bits = [clean(x) for x in row.stripped_strings if clean(x)]
+                    if len(bits) >= 2 and re.search(r"\d", bits[-1]):
+                        output["Total FPA"] = bits[-1]
+
+        # 2. Target direct CSS classes if not yet populated
+        if "Total FPA" not in output:
+            for el in soup.select(".charges-bd-val--strong, .charges-bd-val.charges-bd-val--strong"):
+                parent = el.find_parent(class_="charges-bd-row") or el.parent
+                p_text = clean(parent.get_text(" ")).upper() if parent else ""
+                if any(term in p_text for term in ("FPA", "F.P.A", "FUEL")):
+                    v = clean(el.get_text(" "))
+                    if v and re.search(r"\d", v):
+                        output["Total FPA"] = v
+                        break
+
+        # 3. Fallback scan through stripped lines
+        main = soup.select_one(".gbn-app-shell") or soup.body or soup
+        if main and ("Current Bill" not in output or "Total FPA" not in output):
+            lines = [clean(x) for x in main.stripped_strings if clean(x)]
+            for idx, line in enumerate(lines):
+                norm_line = re.sub(r"[^A-Z0-9]+", " ", line.upper()).strip()
+                if "Current Bill" not in output and norm_line in {"CURRENT BILL", "CURRENT BILL AMOUNT"}:
+                    for cand in lines[idx + 1:idx + 4]:
+                        if re.search(r"[-+]?\d[\d,]*(?:\.\d+)?", cand):
+                            output["Current Bill"] = cand
+                            break
+                if "Total FPA" not in output and ("TOTAL F P A" in norm_line or "TOTAL FPA" in norm_line):
+                    for cand in lines[idx + 1:idx + 4]:
+                        if re.search(r"[-+]?\d[\d,]*(?:\.\d+)?", cand):
+                            output["Total FPA"] = cand
+                            break
+
     def search(self, account):
         session = requests.Session()
         session.headers.update({"User-Agent": "Mozilla/5.0 (compatible; PITC-Bill-Exporter/1.0)"})
@@ -834,6 +907,7 @@ class PITCBillScraper:
             self.put_meter_tables(out, soup)
             self.put_meter_text_sections(out, soup)
             self.put_cum_mdi(out, soup)
+            self.put_charges_breakdown(out, soup)
 
             # Final validation: ensure units fields don't have multiple numbers in a single key
             for prefix in ("kwh", "kvarh", "mdi"):
@@ -1000,6 +1074,8 @@ class PITCBillScraper:
         all_keys.add("AC No.")
         all_keys.add("feeder")
         all_keys.add("adjustments")
+        all_keys.add("Current Bill")
+        all_keys.add("Total FPA")
         all_keys.add("Remarks")
 
         final_headers = order_output_headers([k for k in all_keys if not is_dropped(k)])

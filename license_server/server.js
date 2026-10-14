@@ -359,10 +359,16 @@ app.post('/api/admin/generate', async (req, res) => {
   }
 });
 
-// Start listening
-app.listen(PORT, () => {
-  console.log(`====================================================`);
-  console.log(`🚀 Bill Scrapper License Server running on port ${PORT}`);
-  console.log(`   Health check: http://localhost:${PORT}/health`);
-  console.log(`====================================================`);
-});
+// Start listening locally / standalone
+if (require.main === module) {
+  app.listen(PORT, () => {
+    console.log(`====================================================`);
+    console.log(`🚀 Bill Scrapper License Server running on port ${PORT}`);
+    console.log(`   Health check: http://localhost:${PORT}/health`);
+    console.log(`====================================================`);
+  });
+}
+
+// Export for serverless environments (Vercel)
+module.exports = app;
+

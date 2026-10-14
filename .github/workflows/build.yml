@@ -27,19 +27,10 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt nuitka zstandard
+          pip install -r requirements.txt pyinstaller
 
-      - name: Build Windows Executable (Nuitka C-Compilation)
-        run: |
-          nuitka --standalone --onefile \
-            --assume-yes-for-downloads \
-            --windows-console-mode=disable \
-            --enable-plugin=tk-inter \
-            --include-data-dir=assets=assets \
-            --windows-icon-from-ico=assets/billscrapper.ico \
-            --output-filename=BillScrapper.exe \
-            --output-dir=dist \
-            main.py
+      - name: Build Windows Executable
+        run: pyinstaller BillScrapper.spec --clean
 
       - name: Upload Windows .exe Artifact
         uses: actions/upload-artifact@v4
@@ -57,7 +48,7 @@ jobs:
       - name: Install Linux system packages
         run: |
           sudo apt-get update
-          sudo apt-get install -y python3-tk patchelf ccache
+          sudo apt-get install -y python3-tk binutils
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -67,17 +58,10 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt nuitka zstandard
+          pip install -r requirements.txt pyinstaller
 
-      - name: Build Linux ARM64 Binary (Nuitka C-Compilation)
-        run: |
-          nuitka --standalone --onefile \
-            --assume-yes-for-downloads \
-            --enable-plugin=tk-inter \
-            --include-data-dir=assets=assets \
-            --output-filename=BillScrapper \
-            --output-dir=dist \
-            main.py
+      - name: Build Linux ARM64 Binary
+        run: pyinstaller BillScrapper.spec --clean
 
       - name: Upload Linux ARM64 Artifact
         uses: actions/upload-artifact@v4

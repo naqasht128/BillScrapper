@@ -13,6 +13,7 @@ import queue
 import re
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import tkinter as tk
@@ -1050,6 +1051,289 @@ BTN_DISABLED_FG = "#666666"    # Disabled button text
 LOG_BG = "#1e1e1e"             # Same as IDE code editor canvas
 LOG_FG = "#d4d4d4"             # Clean readable terminal text
 
+# Version & GitHub repository details for automated updates
+APP_VERSION = "1.0.0"
+GITHUB_REPO = "naqasht128/BillScrapper"
+GITHUB_API_LATEST = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
+
+
+def parse_version_tuple(v: str) -> tuple[int, ...]:
+    """Parse a version string (e.g. 'v1.0.2') into an integer tuple for robust comparisons."""
+    nums = [int(n) for n in re.findall(r"\d+", str(v))]
+    while len(nums) < 3:
+        nums.append(0)
+    return tuple(nums)
+
+
+class UpdateInfo:
+    """Metadata regarding an available release from GitHub."""
+    def __init__(self, version: str, download_url: str, file_name: str, file_size: int, release_notes: str = ""):
+        self.version = version
+        self.download_url = download_url
+        self.file_name = file_name
+        self.file_size = file_size
+        self.release_notes = release_notes
+
+
+def check_for_updates(current_version: str = APP_VERSION) -> UpdateInfo | None:
+    """Query GitHub Releases API to check if a newer version is available."""
+    try:
+        headers = {
+            "User-Agent": "BillScrapper-DesktopApp",
+            "Accept": "application/vnd.github.v3+json",
+        }
+        resp = requests.get(GITHUB_API_LATEST, headers=headers, timeout=6)
+        if resp.status_code != 200:
+            return None
+        data = resp.json()
+        tag = data.get("tag_name", "").strip()
+        if not tag:
+            return None
+
+        # Compare versions
+        if parse_version_tuple(tag) <= parse_version_tuple(current_version):
+            return None
+
+        # Determine target executable asset for current OS
+        assets = data.get("assets", [])
+        is_win = sys.platform == "win32"
+        target_asset = None
+        for asset in assets:
+            name = asset.get("name", "")
+            if is_win and name.lower().endswith(".exe"):
+                target_asset = asset
+                break
+            elif not is_win and (name == "BillScrapper" or not name.lower().endswith(".exe")):
+                target_asset = asset
+                break
+
+        if not target_asset or not target_asset.get("browser_download_url"):
+            return None
+
+        return UpdateInfo(
+            version=tag,
+            download_url=target_asset["browser_download_url"],
+            file_name=target_asset.get("name", "BillScrapper"),
+            file_size=target_asset.get("size", 0),
+            release_notes=data.get("body", ""),
+        )
+    except Exception:
+        return None
+
+
+def install_and_restart(new_file_path: str, root_window: tk.Tk):
+    """Replace running executable with new_file_path and relaunch."""
+    is_frozen = getattr(sys, "frozen", False)
+
+    if not is_frozen:
+        # Running from Python source (.py)
+        msg = (
+            f"Update downloaded successfully to:\n{new_file_path}\n\n"
+            "Because you are running from Python source code, you can update via 'git pull' "
+            "or run the downloaded standalone executable directly."
+        )
+        messagebox.showinfo("Update Downloaded", msg)
+        try:
+            if sys.platform == "win32":
+                subprocess.Popen(["explorer.exe", f"/select,{new_file_path}"])
+        except Exception:
+            pass
+        return
+
+    # Running as compiled binary
+    current_exe = os.path.abspath(sys.executable)
+    pid = os.getpid()
+
+    if sys.platform == "win32":
+        bat_path = Path(tempfile.gettempdir()) / f"billscrapper_patch_{pid}.bat"
+        bat_content = f"""@echo off
+setlocal
+set PID={pid}
+set NEW_EXE="{new_file_path}"
+set TARGET_EXE="{current_exe}"
+
+:wait_pid
+timeout /t 1 /nobreak >nul 2>&1
+tasklist /FI "PID eq %PID%" 2>nul | findstr /I "%PID%" >nul
+if not errorlevel 1 goto wait_pid
+
+timeout /t 1 /nobreak >nul 2>&1
+
+copy /y %NEW_EXE% %TARGET_EXE% >nul 2>&1
+if errorlevel 1 (
+    move /y %NEW_EXE% %TARGET_EXE% >nul 2>&1
+)
+
+start "" %TARGET_EXE%
+del %NEW_EXE% >nul 2>&1
+(goto) 2>nul & del "%~f0"
+"""
+        with open(bat_path, "w", encoding="utf-8") as f:
+            f.write(bat_content)
+
+        DETACHED_FLAGS = 0x08000000 | 0x00000200
+        subprocess.Popen(
+            ["cmd.exe", "/c", str(bat_path)],
+            creationflags=DETACHED_FLAGS,
+            close_fds=True,
+        )
+        root_window.destroy()
+        sys.exit(0)
+
+    else:
+        # Linux / Unix
+        os.chmod(new_file_path, 0o755)
+        sh_path = Path(tempfile.gettempdir()) / f"billscrapper_patch_{pid}.sh"
+        sh_content = f"""#!/bin/sh
+PID={pid}
+NEW_BIN="{new_file_path}"
+TARGET_BIN="{current_exe}"
+
+while kill -0 $PID 2>/dev/null; do
+    sleep 0.5
+done
+
+mv -f "$NEW_BIN" "$TARGET_BIN"
+chmod +x "$TARGET_BIN"
+"$TARGET_BIN" &
+rm -f "$0"
+"""
+        with open(sh_path, "w", encoding="utf-8") as f:
+            f.write(sh_content)
+        os.chmod(sh_path, 0o755)
+
+        subprocess.Popen(["/bin/sh", str(sh_path)], close_fds=True)
+        root_window.destroy()
+        sys.exit(0)
+
+
+class UpdateDialog(tk.Toplevel):
+    """Modal dialog displaying download progress and applying the update."""
+    def __init__(self, parent: "BillScraperApp", info: UpdateInfo):
+        super().__init__(parent)
+        self.parent = parent
+        self.info = info
+        self.cancelled = False
+        self.temp_file: str | None = None
+
+        self.title("Updating Bill Scrapper")
+        self.configure(bg=BG_DARK)
+        self.resizable(False, False)
+        self.transient(parent)
+        self.grab_set()
+
+        # Center over parent
+        w, h = 420, 200
+        px = parent.winfo_rootx() + (parent.winfo_width() // 2) - (w // 2)
+        py = parent.winfo_rooty() + (parent.winfo_height() // 2) - (h // 2)
+        self.geometry(f"{w}x{h}+{max(0, px)}+{max(0, py)}")
+
+        container = ttk.Frame(self, style="Root.TFrame", padding=16)
+        container.pack(fill="both", expand=True)
+
+        lbl_title = ttk.Label(
+            container,
+            text=f"Downloading Update ({self.info.version})...",
+            style="Title.TLabel",
+            font=(UI_FONT, 12, "bold"),
+        )
+        lbl_title.pack(anchor="w", pady=(0, 6))
+
+        self.lbl_status = ttk.Label(
+            container,
+            text="Connecting to GitHub Releases...",
+            style="Root.TLabel",
+        )
+        self.lbl_status.pack(anchor="w", pady=(0, 8))
+
+        self.prog = ttk.Progressbar(container, mode="determinate", style="Green.Horizontal.TProgressbar")
+        self.prog.pack(fill="x", pady=(0, 10))
+
+        self.lbl_details = ttk.Label(
+            container,
+            text="0% (0.0 MB / 0.0 MB)",
+            style="Sub.TLabel",
+        )
+        self.lbl_details.pack(anchor="w", pady=(0, 12))
+
+        btn_box = ttk.Frame(container, style="Root.TFrame")
+        btn_box.pack(fill="x")
+
+        self.cancel_btn = ttk.Button(btn_box, text="Cancel", command=self.cancel)
+        self.cancel_btn.pack(side="right")
+
+        self.protocol("WM_DELETE_WINDOW", self.cancel)
+        threading.Thread(target=self._download_worker, daemon=True).start()
+
+    def cancel(self):
+        self.cancelled = True
+        self.lbl_status.configure(text="Cancelling download...")
+        self.cancel_btn.configure(state="disabled")
+
+    def _download_worker(self):
+        try:
+            ext = ".exe" if sys.platform == "win32" else ""
+            tpath = Path(tempfile.gettempdir()) / f"BillScrapper_update_{self.info.version}_{int(time.time())}{ext}"
+            self.temp_file = str(tpath)
+
+            headers = {"User-Agent": "BillScrapper-DesktopApp"}
+            with requests.get(self.info.download_url, headers=headers, stream=True, timeout=30) as r:
+                r.raise_for_status()
+                total = int(r.headers.get("content-length", self.info.file_size or 0))
+                downloaded = 0
+
+                with open(tpath, "wb") as f:
+                    for chunk in r.iter_content(chunk_size=65536):
+                        if self.cancelled:
+                            break
+                        if chunk:
+                            f.write(chunk)
+                            downloaded += len(chunk)
+                            if total > 0:
+                                pct = int((downloaded / total) * 100)
+                                d_mb = downloaded / (1024 * 1024)
+                                t_mb = total / (1024 * 1024)
+                                self.after(0, self._update_progress, pct, d_mb, t_mb)
+
+            if self.cancelled:
+                try:
+                    if os.path.exists(tpath):
+                        os.remove(tpath)
+                except Exception:
+                    pass
+                self.after(0, self.destroy)
+                return
+
+            self.after(0, self._on_download_complete)
+        except Exception as exc:
+            self.after(0, self._on_error, str(exc))
+
+    def _update_progress(self, pct, downloaded_mb, total_mb):
+        if not self.winfo_exists():
+            return
+        self.prog.configure(maximum=100, value=pct)
+        self.lbl_status.configure(text="Downloading package from GitHub...")
+        self.lbl_details.configure(text=f"{pct}% ({downloaded_mb:.1f} MB / {total_mb:.1f} MB)")
+
+    def _on_download_complete(self):
+        if not self.winfo_exists():
+            return
+        self.prog.configure(maximum=100, value=100)
+        self.lbl_status.configure(text="Download complete! Restarting to apply update...")
+        self.lbl_details.configure(text="Please wait a moment...")
+        self.cancel_btn.configure(state="disabled")
+        self.after(800, self._apply_update)
+
+    def _apply_update(self):
+        if self.temp_file and os.path.exists(self.temp_file):
+            install_and_restart(self.temp_file, self.parent)
+
+    def _on_error(self, err_msg):
+        if not self.winfo_exists():
+            return
+        messagebox.showerror("Update Error", f"Failed to download update:\n{err_msg}", parent=self)
+        self.destroy()
+
 
 class BillScraperApp(tk.Tk):
     def __init__(self):
@@ -1194,33 +1478,82 @@ class BillScraperApp(tk.Tk):
         self.err_var = tk.StringVar(value="0")
         self.success_count = 0
         self.error_count = 0
+        self.latest_update: UpdateInfo | None = None
+        self.update_banner: tk.Frame | None = None
+        self.files_frame: ttk.LabelFrame | None = None
 
         self.build_ui()
         self.after(100, self.drain_events)
+        threading.Thread(target=self._bg_update_check, daemon=True).start()
 
     def build_ui(self):
         root = ttk.Frame(self, style="Root.TFrame", padding=(18, 14, 18, 14))
         root.pack(fill="both", expand=True)
 
         header_frame = ttk.Frame(root, style="Root.TFrame")
-        header_frame.pack(fill="x", pady=(0, 12))
+        header_frame.pack(fill="x", pady=(0, 10))
 
-        title_lbl = ttk.Label(header_frame, text="Bill Scrapper", style="Title.TLabel")
-        title_lbl.pack(anchor="w")
+        header_top = ttk.Frame(header_frame, style="Root.TFrame")
+        header_top.pack(fill="x")
+
+        title_lbl = ttk.Label(header_top, text="Bill Scrapper", style="Title.TLabel")
+        title_lbl.pack(side="left")
+
+        ver_box = ttk.Frame(header_top, style="Root.TFrame")
+        ver_box.pack(side="right", anchor="e")
+
+        ttk.Label(ver_box, text=f"v{APP_VERSION}", style="Sub.TLabel").pack(side="left", padx=(0, 8))
+        self.check_update_btn = tk.Button(
+            ver_box, text="Check for Updates", command=self.manual_update_check,
+            bg=BTN_SEC_BG, fg=TEXT_MAIN, activebackground=BTN_SEC_HOVER, activeforeground="white",
+            font=(UI_FONT, 8), relief="flat", padx=8, pady=2, cursor="hand2", bd=0
+        )
+        self.check_update_btn.pack(side="left")
 
         sub_lbl = ttk.Label(header_frame, text="Developed by Tahir Naqash | Automated Bill Scraping & Fixed Charges Audit", style="Sub.TLabel")
         sub_lbl.pack(anchor="w", pady=(2, 0))
 
-        files_frame = ttk.LabelFrame(root, text=" Target Workbook ", padding=10)
-        files_frame.pack(fill="x", pady=(0, 10))
+        # Notification banner for available updates (hidden by default)
+        self.update_banner = tk.Frame(root, bg="#1a314c", bd=1, relief="solid", highlightthickness=1, highlightbackground="#1d70b8")
 
-        ttk.Label(files_frame, text="Workbook (.xlsx / .ods):", font=(UI_FONT, 9, "bold")).grid(row=0, column=0, sticky="w", pady=4)
-        entry = ttk.Entry(files_frame, textvariable=self.input_var, font=(UI_FONT, 9))
+        banner_content = tk.Frame(self.update_banner, bg="#1a314c")
+        banner_content.pack(fill="x", padx=10, pady=6)
+
+        self.update_banner_lbl = tk.Label(
+            banner_content,
+            text="",
+            bg="#1a314c", fg=TEXT_WHITE,
+            font=(UI_FONT, 9, "bold")
+        )
+        self.update_banner_lbl.pack(side="left", anchor="w")
+
+        btn_box = tk.Frame(banner_content, bg="#1a314c")
+        btn_box.pack(side="right")
+
+        self.update_now_btn = tk.Button(
+            btn_box, text="⬇  Update Now", command=self.install_update,
+            bg=ACCENT_GREEN, fg="white", activebackground=ACCENT_GREEN_HOVER, activeforeground="white",
+            font=(UI_FONT, 9, "bold"), relief="flat", padx=10, pady=3, cursor="hand2", bd=0
+        )
+        self.update_now_btn.pack(side="left", padx=(0, 6))
+
+        dismiss_btn = tk.Button(
+            btn_box, text="✕", command=self.dismiss_update_banner,
+            bg="#1a314c", fg=TEXT_MUTED, activebackground="#1a314c", activeforeground=TEXT_WHITE,
+            font=(UI_FONT, 9), relief="flat", padx=6, pady=2, cursor="hand2", bd=0
+        )
+        dismiss_btn.pack(side="left")
+
+        self.files_frame = ttk.LabelFrame(root, text=" Target Workbook ", padding=10)
+        self.files_frame.pack(fill="x", pady=(0, 10))
+
+        ttk.Label(self.files_frame, text="Workbook (.xlsx / .ods):", font=(UI_FONT, 9, "bold")).grid(row=0, column=0, sticky="w", pady=4)
+        entry = ttk.Entry(self.files_frame, textvariable=self.input_var, font=(UI_FONT, 9))
         entry.grid(row=0, column=1, sticky="ew", padx=(8, 8), pady=4)
 
-        browse_btn = ttk.Button(files_frame, text="Browse...", command=self.choose_input)
+        browse_btn = ttk.Button(self.files_frame, text="Browse...", command=self.choose_input)
         browse_btn.grid(row=0, column=2, pady=4)
-        files_frame.columnconfigure(1, weight=1)
+        self.files_frame.columnconfigure(1, weight=1)
 
         mid_frame = ttk.Frame(root, style="Root.TFrame")
         mid_frame.pack(fill="x", pady=(0, 10))
@@ -1378,6 +1711,48 @@ class BillScraperApp(tk.Tk):
         self.cancel_button.configure(state="disabled", bg=BTN_DISABLED_BG)
         self.write_log("Stop requested. Waiting for current account to finish...", "err")
 
+    def show_update_banner(self, info: UpdateInfo):
+        self.latest_update = info
+        self.update_banner_lbl.configure(
+            text=f"🚀 Update Available: Version {info.version} is ready to install!"
+        )
+        if self.files_frame and self.files_frame.winfo_exists():
+            self.update_banner.pack(fill="x", pady=(0, 10), before=self.files_frame)
+        else:
+            self.update_banner.pack(fill="x", pady=(0, 10))
+
+    def dismiss_update_banner(self):
+        if self.update_banner:
+            self.update_banner.pack_forget()
+
+    def install_update(self):
+        if not self.latest_update:
+            return
+        if self.cancel_button["state"] == "normal":
+            messagebox.showwarning(
+                "Task Running",
+                "Please stop or wait for the current scraping process to complete before updating.",
+                parent=self
+            )
+            return
+        UpdateDialog(self, self.latest_update)
+
+    def _bg_update_check(self, manual: bool = False):
+        try:
+            info = check_for_updates(APP_VERSION)
+            if info:
+                self.events.put(("update_available", info))
+            elif manual:
+                self.events.put(("update_not_found",))
+        except Exception as exc:
+            if manual:
+                self.events.put(("update_check_error", str(exc)))
+
+    def manual_update_check(self):
+        self.status_var.set("Checking for updates on GitHub...")
+        self.write_log(f"Checking GitHub for newer releases (current: v{APP_VERSION})...", "info")
+        threading.Thread(target=self._bg_update_check, args=(True,), daemon=True).start()
+
     def drain_events(self):
         try:
             while True:
@@ -1421,6 +1796,20 @@ class BillScraperApp(tk.Tk):
                     self.status_var.set("Failed with error.")
                     self.write_log("ERROR: " + event[1], "err")
                     messagebox.showerror("Export Failed", event[1])
+
+                elif event[0] == "update_available":
+                    _, info = event
+                    self.show_update_banner(info)
+                    self.write_log(f"🔔 Update available: {info.version} (current: v{APP_VERSION})", "info")
+                    self.status_var.set(f"Update available: {info.version}. Click 'Update Now' above.")
+
+                elif event[0] == "update_not_found":
+                    self.status_var.set(f"Bill Scrapper is up to date (v{APP_VERSION}).")
+                    messagebox.showinfo("Update Check", f"You are on the latest version of Bill Scrapper (v{APP_VERSION}).")
+
+                elif event[0] == "update_check_error":
+                    self.status_var.set("Update check failed.")
+                    messagebox.showwarning("Update Check", f"Could not check for updates:\n{event[1]}")
         except queue.Empty:
             pass
         self.after(100, self.drain_events)

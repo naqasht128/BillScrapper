@@ -56,6 +56,11 @@ Desktop UI application to scrape PITC (PESCO) electricity bills from account/ref
 11. **Modern Dark Mode UI**:
     - Sleek slate dark interface with real-time live execution logs, progress tracking, and Windows native immersive dark title bar support.
 
+12. **In-App Auto Updater**:
+    - Automatically checks GitHub Releases for new updates in the background.
+    - Displays an unobtrusive update banner with one-click download, self-replacement, and restart.
+    - Includes a manual "Check for Updates" button and live download progress modal.
+
 ---
 
 ## 🚀 How to Run

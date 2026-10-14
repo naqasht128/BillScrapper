@@ -7,8 +7,11 @@ written strictly below their matching headings without column shifting.
 
 from __future__ import annotations
 
+import hashlib
 import io
+import json
 import os
+import platform
 import queue
 import re
 import subprocess
@@ -17,7 +20,9 @@ import tempfile
 import threading
 import time
 import tkinter as tk
+import webbrowser
 import zipfile
+from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
@@ -28,6 +33,7 @@ from lxml import etree
 from openpyxl import load_workbook
 
 URL = "https://bill.pitc.com.pk/pescobill"
+LICENSE_API_URL = os.environ.get("LICENSE_API_URL", "https://your-render-app.onrender.com")
 
 
 def resource_path(relative_path):
@@ -1411,8 +1417,599 @@ class UpdateDialog(tk.Toplevel):
         self.destroy()
 
 
+# ====================================================================
+# LICENSING, HARDWARE DEVICE FINGERPRINTING & LOCAL CONFIG
+# ====================================================================
+
+def get_device_id() -> str:
+    """Generate a persistent, unique hardware SHA-256 fingerprint for this machine."""
+    components = [sys.platform]
+    if sys.platform == "win32":
+        # 1. MachineGuid from Windows Registry
+        try:
+            import winreg
+            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Cryptography") as key:
+                guid, _ = winreg.QueryValueEx(key, "MachineGuid")
+                if guid:
+                    components.append(str(guid).strip().lower())
+        except Exception:
+            pass
+
+        # 2. Motherboard / BIOS UUID via WMIC
+        try:
+            out = subprocess.check_output(
+                ["wmic", "csproduct", "get", "uuid"],
+                stderr=subprocess.DEVNULL,
+                text=True,
+                timeout=2,
+            )
+            lines = [clean(l) for l in out.splitlines() if clean(l)]
+            if len(lines) >= 2 and lines[1]:
+                components.append(lines[1].strip().lower())
+        except Exception:
+            pass
+
+    elif sys.platform == "darwin":
+        try:
+            out = subprocess.check_output(
+                ["ioreg", "-rd1", "-c", "IOPlatformExpertDevice"],
+                stderr=subprocess.DEVNULL,
+                text=True,
+                timeout=2,
+            )
+            m = re.search(r'"IOPlatformUUID"\s*=\s*"([^"]+)"', out)
+            if m:
+                components.append(m.group(1).strip().lower())
+        except Exception:
+            pass
+
+    else:
+        # Linux / Unix machine-id
+        for path in ("/etc/machine-id", "/var/lib/dbus/machine-id"):
+            if os.path.exists(path):
+                try:
+                    with open(path, "r", encoding="utf-8") as f:
+                        val = f.read().strip()
+                        if val:
+                            components.append(val.lower())
+                            break
+                except Exception:
+                    pass
+
+    # Fallback to MAC node if valid
+    try:
+        import uuid
+        node = uuid.getnode()
+        if (node >> 40) % 2 == 0:
+            components.append(str(node))
+    except Exception:
+        pass
+
+    raw = "|".join(components) if len(components) > 1 else f"fallback_{sys.platform}_{os.getlogin()}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def get_os_info() -> str:
+    """Return human-readable OS and architecture details."""
+    try:
+        return f"{platform.system()} {platform.release()} ({platform.machine()})"
+    except Exception:
+        return sys.platform
+
+
+def get_license_file_path() -> Path:
+    """Return local path to license.json in the user's OS configuration folder."""
+    if sys.platform == "win32":
+        base = Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming"))
+        app_dir = base / "BillScrapper"
+    else:
+        app_dir = Path.home() / ".billscrapper"
+    app_dir.mkdir(parents=True, exist_ok=True)
+    return app_dir / "license.json"
+
+
+def load_local_license() -> dict:
+    """Load cached license details from local disk."""
+    path = get_license_file_path()
+    if path.is_file():
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {}
+
+
+def save_local_license(data: dict):
+    """Save active license details to local disk."""
+    path = get_license_file_path()
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+    except Exception:
+        pass
+
+
+def verify_license_remote(serial_key: str, device_id: str) -> dict:
+    """Check license status with Render Supabase API."""
+    url = f"{LICENSE_API_URL.rstrip('/')}/api/verify"
+    payload = {
+        "serial_key": serial_key.strip().upper(),
+        "device_id": device_id,
+        "os_info": get_os_info(),
+    }
+    resp = requests.post(url, json=payload, timeout=12)
+    try:
+        return resp.json()
+    except Exception:
+        return {"valid": False, "status": "network_error", "message": f"Server HTTP {resp.status_code}"}
+
+
+def activate_license_remote(serial_key: str, device_id: str) -> dict:
+    """Activate license with Render Supabase API."""
+    url = f"{LICENSE_API_URL.rstrip('/')}/api/activate"
+    payload = {
+        "serial_key": serial_key.strip().upper(),
+        "device_id": device_id,
+        "os_info": get_os_info(),
+    }
+    resp = requests.post(url, json=payload, timeout=12)
+    try:
+        return resp.json()
+    except Exception:
+        return {"valid": False, "status": "network_error", "message": f"Server HTTP {resp.status_code}"}
+
+
+def format_expiry_date(iso_str: str | None) -> str:
+    """Format an ISO timestamp cleanly, e.g. '14 Jan 2027 (89 days remaining)'."""
+    if not iso_str:
+        return "Not Activated"
+    try:
+        clean_ts = str(iso_str).replace("Z", "+00:00")
+        dt = datetime.fromisoformat(clean_ts)
+        now = datetime.now(timezone.utc)
+        diff = dt - now
+        date_str = dt.strftime("%d %b %Y")
+        if diff.days > 0:
+            return f"{date_str} ({diff.days} days remaining)"
+        elif diff.total_seconds() > 0:
+            return f"{date_str} (Expires today)"
+        else:
+            return f"{date_str} (Expired)"
+    except Exception:
+        return str(iso_str)[:10]
+
+
+def format_plan_type(plan_code: str | None) -> str:
+    """Convert machine plan code to human friendly label."""
+    mapping = {
+        "1_month": "1 Month (1 Device)",
+        "3_months": "3 Months (Up to 2 Devices)",
+        "6_months": "6 Months (Up to 2 Devices)",
+        "1_year": "1 Year (Up to 2 Devices)",
+    }
+    if not plan_code:
+        return "Not Activated"
+    return mapping.get(str(plan_code).lower(), str(plan_code).replace("_", " ").title())
+
+
+class LicenseGateDialog(tk.Toplevel):
+    """Sleek VS Code Dark+ styled License Activation Gate & Subscription Dialog."""
+
+    def __init__(self, parent: "BillScraperApp", initial_error: str = ""):
+        super().__init__(parent)
+        self.parent = parent
+        self.title("Bill Scrapper — License Activation")
+        self.configure(bg=BG_DARK)
+        self.resizable(False, False)
+        self.transient(parent)
+        self.grab_set()
+
+        self.activated = False
+        self.license_info: dict | None = None
+        self.device_id = get_device_id()
+
+        # Exit application cleanly if closed without activation
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
+
+        w, h = 540, 620
+        sw = self.winfo_screenwidth()
+        sh = self.winfo_screenheight()
+        px = max(0, (sw - w) // 2)
+        py = max(0, (sh - h) // 2)
+        self.geometry(f"{w}x{h}+{px}+{py}")
+
+        try:
+            if sys.platform == "win32":
+                icon_file = resource_path("assets/billscrapper.ico")
+                if not os.path.exists(icon_file):
+                    icon_file = resource_path("assets/mdiscrapper.ico")
+                if os.path.exists(icon_file):
+                    self.iconbitmap(icon_file)
+        except Exception:
+            pass
+
+        self._build_ui(initial_error)
+
+    def _build_ui(self, initial_error: str):
+        self.container = ttk.Frame(self, style="Root.TFrame", padding=(22, 16, 22, 16))
+        self.container.pack(fill="both", expand=True)
+
+        # Header
+        top_bar = ttk.Frame(self.container, style="Root.TFrame")
+        top_bar.pack(fill="x", pady=(0, 12))
+
+        ttk.Label(top_bar, text="Bill Scrapper", style="Title.TLabel", font=(UI_FONT, 15, "bold")).pack(anchor="w")
+        ttk.Label(top_bar, text="License Activation & Subscription Gate", style="Sub.TLabel").pack(anchor="w", pady=(2, 0))
+
+        # Tab Navigation (Enter Key vs Buy)
+        nav_frame = ttk.Frame(self.container, style="Root.TFrame")
+        nav_frame.pack(fill="x", pady=(0, 12))
+
+        self.btn_tab_activate = tk.Button(
+            nav_frame,
+            text="🔑  Enter Serial Key",
+            font=(UI_FONT, 9, "bold"),
+            relief="flat",
+            cursor="hand2",
+            padx=16,
+            pady=6,
+            command=self._show_activate_tab,
+        )
+        self.btn_tab_activate.pack(side="left", fill="x", expand=True, padx=(0, 4))
+
+        self.btn_tab_buy = tk.Button(
+            nav_frame,
+            text="🛒  Buy Subscription",
+            font=(UI_FONT, 9, "bold"),
+            relief="flat",
+            cursor="hand2",
+            padx=16,
+            pady=6,
+            command=self._show_buy_tab,
+        )
+        self.btn_tab_buy.pack(side="left", fill="x", expand=True, padx=(4, 0))
+
+        # Main Dynamic Content Area
+        self.tab_container = ttk.Frame(self.container, style="Root.TFrame")
+        self.tab_container.pack(fill="both", expand=True)
+
+        self.tab_activate = ttk.Frame(self.tab_container, style="Root.TFrame")
+        self.tab_buy = ttk.Frame(self.tab_container, style="Root.TFrame")
+
+        self._build_activate_tab(initial_error)
+        self._build_buy_tab()
+
+        # Default to activate tab
+        self._show_activate_tab()
+
+    def _build_activate_tab(self, initial_error: str):
+        # Hardware ID Card
+        hw_card = ttk.Frame(self.tab_activate, style="Card.TFrame", padding=(14, 10))
+        hw_card.pack(fill="x", pady=(0, 10))
+
+        ttk.Label(hw_card, text="MACHINE HARDWARE ID", style="CardTitle.TLabel", font=(UI_FONT, 8, "bold")).pack(anchor="w")
+
+        hw_row = ttk.Frame(hw_card, style="Card.TFrame")
+        hw_row.pack(fill="x", pady=(4, 0))
+
+        short_id = f"{self.device_id[:16]}...{self.device_id[-8:]}"
+        self.hw_lbl = ttk.Label(hw_row, text=short_id, font=(MONO_FONT, 9), foreground=TEXT_MUTED, background=CARD_BG)
+        self.hw_lbl.pack(side="left", fill="x", expand=True)
+
+        self.copy_id_btn = tk.Button(
+            hw_row,
+            text="📋 Copy ID",
+            bg=BTN_SEC_BG,
+            fg=TEXT_MAIN,
+            activebackground=BTN_SEC_HOVER,
+            activeforeground=TEXT_WHITE,
+            font=(UI_FONT, 8),
+            relief="flat",
+            cursor="hand2",
+            padx=8,
+            pady=2,
+            command=self._copy_device_id,
+        )
+        self.copy_id_btn.pack(side="right")
+
+        # Serial Key Input Card
+        key_card = ttk.Frame(self.tab_activate, style="Card.TFrame", padding=(16, 14))
+        key_card.pack(fill="x", pady=(0, 12))
+
+        ttk.Label(key_card, text="ENTER SERIAL KEY", style="CardTitle.TLabel", font=(UI_FONT, 9, "bold")).pack(anchor="w")
+        ttk.Label(key_card, text="Format: BS-XXXX-XXXX-XXXX (provided upon purchase)", style="Sub.TLabel", font=(UI_FONT, 8)).pack(anchor="w", pady=(2, 8))
+
+        self.key_var = tk.StringVar()
+        saved = load_local_license().get("serial_key", "")
+        if saved:
+            self.key_var.set(saved)
+
+        self.key_entry = tk.Entry(
+            key_card,
+            textvariable=self.key_var,
+            font=(MONO_FONT, 12, "bold"),
+            bg=INPUT_BG,
+            fg="#4ec9b0",
+            insertbackground=TEXT_WHITE,
+            relief="flat",
+            justify="center",
+            highlightthickness=1,
+            highlightbackground=BORDER_COLOR,
+            highlightcolor=ACCENT_GREEN,
+        )
+        self.key_entry.pack(fill="x", ipady=8, pady=(0, 10))
+        self.key_entry.bind("<Return>", lambda e: self._do_activate())
+
+        self.activate_btn = tk.Button(
+            key_card,
+            text="⚡  ACTIVATE LICENSE",
+            bg=ACCENT_GREEN,
+            fg=TEXT_WHITE,
+            activebackground=ACCENT_GREEN_HOVER,
+            activeforeground=TEXT_WHITE,
+            font=(UI_FONT, 10, "bold"),
+            relief="flat",
+            cursor="hand2",
+            pady=8,
+            command=self._do_activate,
+        )
+        self.activate_btn.pack(fill="x")
+
+        # Status Feedback Card
+        self.status_card = ttk.Frame(self.tab_activate, style="Card.TFrame", padding=(14, 10))
+        self.status_card.pack(fill="both", expand=True, pady=(0, 10))
+
+        self.status_var = tk.StringVar()
+        self.status_lbl = tk.Label(
+            self.status_card,
+            textvariable=self.status_var,
+            font=(UI_FONT, 9),
+            bg=CARD_BG,
+            fg=TEXT_MUTED,
+            wraplength=460,
+            justify="left",
+            anchor="nw",
+        )
+        self.status_lbl.pack(fill="both", expand=True)
+
+        if initial_error:
+            self._set_status(f"⚠️ {initial_error}", color="#f14c4c")
+        else:
+            self._set_status("Enter your serial key above and click 'Activate License'.", color=TEXT_MUTED)
+
+        # Bottom Switcher Link
+        help_row = ttk.Frame(self.tab_activate, style="Root.TFrame")
+        help_row.pack(fill="x")
+
+        ttk.Label(help_row, text="Don't have a serial key?", style="Sub.TLabel").pack(side="left")
+        buy_link = tk.Button(
+            help_row,
+            text="View Subscription Plans & Buy →",
+            bg=BG_DARK,
+            fg="#58a6ff",
+            activebackground=BG_DARK,
+            activeforeground="#79c0ff",
+            font=(UI_FONT, 9, "underline"),
+            relief="flat",
+            bd=0,
+            cursor="hand2",
+            command=self._show_buy_tab,
+        )
+        buy_link.pack(side="left", padx=(6, 0))
+
+    def _build_buy_tab(self):
+        # 1. Subscription Plans Card
+        plans_card = ttk.Frame(self.tab_buy, style="Card.TFrame", padding=(16, 12))
+        plans_card.pack(fill="x", pady=(0, 10))
+
+        ttk.Label(plans_card, text="SUBSCRIPTION PLANS & PRICING", style="CardTitle.TLabel", font=(UI_FONT, 9, "bold")).pack(anchor="w", pady=(0, 8))
+
+        plans_data = [
+            ("1 Month", "Rs. 300", "1 Device", "#89d185"),
+            ("3 Months", "Rs. 700", "Up to 2 Devices", "#79c0ff"),
+            ("6 Months", "Rs. 1,200", "Up to 2 Devices", "#d2a8ff"),
+            ("1 Year", "Rs. 2,000", "Up to 2 Devices", "#ffa657"),
+        ]
+
+        for plan_name, price, devices, pill_color in plans_data:
+            p_row = tk.Frame(plans_card, bg=INPUT_BG, padx=10, pady=6, highlightthickness=1, highlightbackground=BORDER_COLOR)
+            p_row.pack(fill="x", pady=2)
+
+            tk.Label(p_row, text=plan_name, font=(UI_FONT, 9, "bold"), fg=TEXT_WHITE, bg=INPUT_BG).pack(side="left")
+            tk.Label(p_row, text=f"•  {devices}", font=(UI_FONT, 8), fg=TEXT_MUTED, bg=INPUT_BG).pack(side="left", padx=(8, 0))
+            tk.Label(p_row, text=price, font=(UI_FONT, 9, "bold"), fg=pill_color, bg=INPUT_BG).pack(side="right")
+
+        # 2. Contact for Purchase Card
+        contact_card = ttk.Frame(self.tab_buy, style="Card.TFrame", padding=(16, 12))
+        contact_card.pack(fill="both", expand=True, pady=(0, 10))
+
+        ttk.Label(contact_card, text="CONTACT FOR PURCHASE & ACTIVATION", style="CardTitle.TLabel", font=(UI_FONT, 9, "bold")).pack(anchor="w", pady=(0, 8))
+
+        # WhatsApp Row
+        wa_frame = tk.Frame(contact_card, bg=INPUT_BG, padx=10, pady=8, highlightthickness=1, highlightbackground=BORDER_COLOR)
+        wa_frame.pack(fill="x", pady=(0, 6))
+
+        wa_canvas = tk.Canvas(wa_frame, width=28, height=28, bg=INPUT_BG, highlightthickness=0)
+        wa_canvas.pack(side="left", padx=(0, 8))
+        wa_canvas.create_oval(2, 2, 26, 26, fill="#25D366", outline="")
+        wa_canvas.create_polygon(3, 20, 2, 26, 8, 23, fill="#25D366", outline="")
+        wa_canvas.create_text(14, 14, text="✆", fill="white", font=(UI_FONT, 12, "bold"))
+
+        wa_text_box = tk.Frame(wa_frame, bg=INPUT_BG)
+        wa_text_box.pack(side="left", fill="x", expand=True)
+        tk.Label(wa_text_box, text="WhatsApp", font=(UI_FONT, 8, "bold"), fg="#25D366", bg=INPUT_BG).pack(anchor="w")
+        tk.Label(wa_text_box, text="033339962474", font=(UI_FONT, 9, "bold"), fg=TEXT_WHITE, bg=INPUT_BG).pack(anchor="w")
+
+        wa_chat_btn = tk.Button(
+            wa_frame,
+            text="💬 Chat",
+            bg=ACCENT_GREEN,
+            fg=TEXT_WHITE,
+            activebackground=ACCENT_GREEN_HOVER,
+            activeforeground=TEXT_WHITE,
+            font=(UI_FONT, 8, "bold"),
+            relief="flat",
+            cursor="hand2",
+            padx=8,
+            pady=3,
+            command=lambda: webbrowser.open("https://wa.me/9233339962474"),
+        )
+        wa_chat_btn.pack(side="right", padx=(4, 0))
+
+        wa_copy_btn = tk.Button(
+            wa_frame,
+            text="📋 Copy",
+            bg=BTN_SEC_BG,
+            fg=TEXT_MAIN,
+            activebackground=BTN_SEC_HOVER,
+            activeforeground=TEXT_WHITE,
+            font=(UI_FONT, 8),
+            relief="flat",
+            cursor="hand2",
+            padx=8,
+            pady=3,
+            command=lambda: self._copy_text("033339962474", wa_copy_btn),
+        )
+        wa_copy_btn.pack(side="right")
+
+        # Gmail Row
+        gm_frame = tk.Frame(contact_card, bg=INPUT_BG, padx=10, pady=8, highlightthickness=1, highlightbackground=BORDER_COLOR)
+        gm_frame.pack(fill="x")
+
+        gm_canvas = tk.Canvas(gm_frame, width=28, height=28, bg=INPUT_BG, highlightthickness=0)
+        gm_canvas.pack(side="left", padx=(0, 8))
+        gm_canvas.create_oval(2, 2, 26, 26, fill="#EA4335", outline="")
+        gm_canvas.create_text(14, 14, text="✉", fill="white", font=(UI_FONT, 12, "bold"))
+
+        gm_text_box = tk.Frame(gm_frame, bg=INPUT_BG)
+        gm_text_box.pack(side="left", fill="x", expand=True)
+        tk.Label(gm_text_box, text="Gmail / Email", font=(UI_FONT, 8, "bold"), fg="#EA4335", bg=INPUT_BG).pack(anchor="w")
+        tk.Label(gm_text_box, text="tahir.naqash4@gmail.com", font=(UI_FONT, 9, "bold"), fg=TEXT_WHITE, bg=INPUT_BG).pack(anchor="w")
+
+        gm_mail_btn = tk.Button(
+            gm_frame,
+            text="✉ Email",
+            bg="#b83a3a",
+            fg=TEXT_WHITE,
+            activebackground="#c93b3b",
+            activeforeground=TEXT_WHITE,
+            font=(UI_FONT, 8, "bold"),
+            relief="flat",
+            cursor="hand2",
+            padx=8,
+            pady=3,
+            command=lambda: webbrowser.open("mailto:tahir.naqash4@gmail.com"),
+        )
+        gm_mail_btn.pack(side="right", padx=(4, 0))
+
+        gm_copy_btn = tk.Button(
+            gm_frame,
+            text="📋 Copy",
+            bg=BTN_SEC_BG,
+            fg=TEXT_MAIN,
+            activebackground=BTN_SEC_HOVER,
+            activeforeground=TEXT_WHITE,
+            font=(UI_FONT, 8),
+            relief="flat",
+            cursor="hand2",
+            padx=8,
+            pady=3,
+            command=lambda: self._copy_text("tahir.naqash4@gmail.com", gm_copy_btn),
+        )
+        gm_copy_btn.pack(side="right")
+
+        # Bottom Switcher
+        back_btn = tk.Button(
+            self.tab_buy,
+            text="←  Already Have a Serial Key? Return to Activation",
+            bg=BTN_SEC_BG,
+            fg=TEXT_MAIN,
+            activebackground=BTN_SEC_HOVER,
+            activeforeground=TEXT_WHITE,
+            font=(UI_FONT, 9),
+            relief="flat",
+            cursor="hand2",
+            pady=6,
+            command=self._show_activate_tab,
+        )
+        back_btn.pack(fill="x")
+
+    def _show_activate_tab(self):
+        self.tab_buy.pack_forget()
+        self.tab_activate.pack(fill="both", expand=True)
+        self.btn_tab_activate.configure(bg=ACCENT_GREEN, fg=TEXT_WHITE, activebackground=ACCENT_GREEN_HOVER)
+        self.btn_tab_buy.configure(bg=BTN_SEC_BG, fg=TEXT_MAIN, activebackground=BTN_SEC_HOVER)
+        self.key_entry.focus_set()
+
+    def _show_buy_tab(self):
+        self.tab_activate.pack_forget()
+        self.tab_buy.pack(fill="both", expand=True)
+        self.btn_tab_buy.configure(bg=ACCENT_GREEN, fg=TEXT_WHITE, activebackground=ACCENT_GREEN_HOVER)
+        self.btn_tab_activate.configure(bg=BTN_SEC_BG, fg=TEXT_MAIN, activebackground=BTN_SEC_HOVER)
+
+    def _copy_text(self, text: str, btn: tk.Button):
+        self.clipboard_clear()
+        self.clipboard_append(text)
+        old_txt = btn.cget("text")
+        btn.configure(text="✅ Copied!", fg="#4ec9b0")
+        self.after(2000, lambda: btn.configure(text=old_txt, fg=TEXT_MAIN))
+
+    def _copy_device_id(self):
+        self.clipboard_clear()
+        self.clipboard_append(self.device_id)
+        self.copy_id_btn.configure(text="✅ Copied!", fg="#4ec9b0")
+        self.after(2000, lambda: self.copy_id_btn.configure(text="📋 Copy ID", fg=TEXT_MAIN))
+
+    def _set_status(self, text: str, color: str = TEXT_MUTED):
+        self.status_var.set(text)
+        self.status_lbl.configure(fg=color)
+
+    def _do_activate(self):
+        key = self.key_var.get().strip().upper()
+        if not key or key == "BS-XXXX-XXXX-XXXX":
+            self._set_status("Please enter your serial key to activate.", color="#f14c4c")
+            return
+
+        self.activate_btn.configure(state="disabled", text="Activating...", bg="#1a5c28")
+        self._set_status("Connecting to license server...", color="#e5c07b")
+        self.update_idletasks()
+
+        def worker():
+            try:
+                res = activate_license_remote(key, self.device_id)
+                self.after(0, lambda: self._on_activation_result(res))
+            except Exception as e:
+                self.after(0, lambda: self._on_activation_error(str(e)))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_activation_result(self, res: dict):
+        self.activate_btn.configure(state="normal", text="⚡  ACTIVATE LICENSE", bg=ACCENT_GREEN)
+        if res.get("valid"):
+            save_local_license(res)
+            self.activated = True
+            self.license_info = res
+            self._set_status("✅ License activated successfully! Launching Bill Scrapper...", color="#89d185")
+            self.after(600, self.destroy)
+        else:
+            msg = res.get("message") or "License activation failed."
+            self._set_status(f"❌ {msg}", color="#f14c4c")
+
+    def _on_activation_error(self, err_msg: str):
+        self.activate_btn.configure(state="normal", text="⚡  ACTIVATE LICENSE", bg=ACCENT_GREEN)
+        self._set_status(f"❌ Connection error: {err_msg}", color="#f14c4c")
+
+    def _on_close(self):
+        if not self.activated:
+            self.parent.destroy()
+            sys.exit(0)
+        else:
+            self.destroy()
+
+
 class AboutDialog(tk.Toplevel):
-    """Sleek modal dialog showing application and developer information."""
+    """Sleek modal dialog showing application, active license, and developer information."""
     def __init__(self, parent: "BillScraperApp"):
         super().__init__(parent)
         self.title("About Bill Scrapper")
@@ -1421,23 +2018,74 @@ class AboutDialog(tk.Toplevel):
         self.transient(parent)
         self.grab_set()
 
-        w, h = 380, 240
+        w, h = 420, 390
         px = parent.winfo_rootx() + (parent.winfo_width() // 2) - (w // 2)
         py = parent.winfo_rooty() + (parent.winfo_height() // 2) - (h // 2)
         self.geometry(f"{w}x{h}+{max(0, px)}+{max(0, py)}")
 
-        container = ttk.Frame(self, style="Root.TFrame", padding=(20, 18, 20, 18))
+        container = ttk.Frame(self, style="Root.TFrame", padding=(20, 16, 20, 16))
         container.pack(fill="both", expand=True)
 
         app_title = ttk.Label(container, text="Bill Scrapper", style="Title.TLabel", font=(UI_FONT, 14, "bold"))
         app_title.pack(anchor="w")
 
         app_ver = ttk.Label(container, text=f"Version {APP_VERSION}", style="Sub.TLabel")
-        app_ver.pack(anchor="w", pady=(2, 10))
+        app_ver.pack(anchor="w", pady=(2, 8))
 
-        # Card box for developer info
-        info_card = ttk.Frame(container, style="Card.TFrame", padding=(14, 12))
-        info_card.pack(fill="x", pady=(0, 14))
+        # 1. License Information Card
+        lic = getattr(parent, "active_license", None) or load_local_license()
+        serial_key = lic.get("serial_key", "Not Activated")
+        plan_str = format_plan_type(lic.get("plan_type"))
+        expiry_str = format_expiry_date(lic.get("expires_at"))
+
+        lic_card = ttk.Frame(container, style="Card.TFrame", padding=(14, 10))
+        lic_card.pack(fill="x", pady=(0, 10))
+
+        ttk.Label(lic_card, text="LICENSE INFORMATION", font=(UI_FONT, 8, "bold"), foreground=TEXT_MUTED, background=CARD_BG).pack(anchor="w", pady=(0, 4))
+
+        key_row = ttk.Frame(lic_card, style="Card.TFrame")
+        key_row.pack(fill="x", pady=(2, 4))
+
+        ttk.Label(key_row, text="Key: ", font=(UI_FONT, 9, "bold"), foreground=TEXT_WHITE, background=CARD_BG).pack(side="left")
+        ttk.Label(key_row, text=serial_key, font=(MONO_FONT, 9, "bold"), foreground="#4ec9b0", background=CARD_BG).pack(side="left")
+
+        self.copy_key_btn = tk.Button(
+            key_row,
+            text="📋 Copy",
+            bg=BTN_SEC_BG,
+            fg=TEXT_MAIN,
+            activebackground=BTN_SEC_HOVER,
+            activeforeground=TEXT_WHITE,
+            font=(UI_FONT, 8),
+            relief="flat",
+            cursor="hand2",
+            padx=8,
+            pady=2,
+            command=self._copy_serial_key,
+        )
+        self.copy_key_btn.pack(side="right")
+
+        plan_lbl = ttk.Label(
+            lic_card,
+            text=f"Plan: {plan_str}",
+            font=(UI_FONT, 9),
+            foreground=TEXT_MAIN,
+            background=CARD_BG,
+        )
+        plan_lbl.pack(anchor="w", pady=(0, 2))
+
+        exp_lbl = ttk.Label(
+            lic_card,
+            text=f"Status: {expiry_str}",
+            font=(UI_FONT, 9),
+            foreground="#89d185" if "remaining" in expiry_str or "today" in expiry_str else TEXT_MAIN,
+            background=CARD_BG,
+        )
+        exp_lbl.pack(anchor="w")
+
+        # 2. Developer Information Card
+        info_card = ttk.Frame(container, style="Card.TFrame", padding=(14, 10))
+        info_card.pack(fill="x", pady=(0, 12))
 
         dev_lbl = ttk.Label(
             info_card,
@@ -1472,6 +2120,15 @@ class AboutDialog(tk.Toplevel):
         close_btn = ttk.Button(btn_box, text="Close", command=self.destroy)
         close_btn.pack(side="right")
         close_btn.focus_set()
+
+    def _copy_serial_key(self):
+        lic = getattr(self.master, "active_license", None) or load_local_license()
+        key = lic.get("serial_key", "")
+        if key:
+            self.clipboard_clear()
+            self.clipboard_append(key)
+            self.copy_key_btn.configure(text="✅ Copied!", fg="#4ec9b0")
+            self.after(2000, lambda: self.copy_key_btn.configure(text="📋 Copy", fg=TEXT_MAIN))
 
 
 class BillScraperApp(tk.Tk):
@@ -1621,9 +2278,58 @@ class BillScraperApp(tk.Tk):
         self.update_banner: tk.Frame | None = None
         self.files_frame: ttk.LabelFrame | None = None
 
+        self.active_license: dict | None = None
+        self.withdraw()
+
+        if not self.ensure_licensed():
+            self.destroy()
+            return
+
+        self.deiconify()
         self.build_ui()
         self.after(100, self.drain_events)
         threading.Thread(target=self._bg_update_check, daemon=True).start()
+
+    def ensure_licensed(self) -> bool:
+        """Verify existing license or prompt user with the LicenseGateDialog."""
+        local_lic = load_local_license()
+        device_id = get_device_id()
+        initial_error = ""
+
+        if local_lic and local_lic.get("serial_key"):
+            key = local_lic["serial_key"]
+            try:
+                res = verify_license_remote(key, device_id)
+                if res.get("valid"):
+                    local_lic.update(res)
+                    save_local_license(local_lic)
+                    self.active_license = local_lic
+                    return True
+                else:
+                    initial_error = res.get("message") or "License expired or invalid."
+            except Exception as e:
+                # If network is offline, check if local expires_at is present and not expired
+                exp_str = local_lic.get("expires_at")
+                if exp_str:
+                    try:
+                        clean_ts = str(exp_str).replace("Z", "+00:00")
+                        exp_dt = datetime.fromisoformat(clean_ts)
+                        if exp_dt > datetime.now(timezone.utc):
+                            self.active_license = local_lic
+                            return True
+                    except Exception:
+                        pass
+                initial_error = f"License verification error: {e}"
+
+        # If we reach here, license is missing, expired, or invalid
+        gate = LicenseGateDialog(self, initial_error=initial_error)
+        self.wait_window(gate)
+
+        if gate.activated and gate.license_info:
+            self.active_license = gate.license_info
+            return True
+
+        return False
 
     def build_ui(self):
         root = ttk.Frame(self, style="Root.TFrame", padding=(18, 14, 18, 14))

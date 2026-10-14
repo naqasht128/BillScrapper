@@ -20,7 +20,7 @@ from tkinter import messagebox, ttk
 import requests
 
 # Default API Configuration (Can also be set via environment or GUI)
-DEFAULT_API_URL = os.environ.get("LICENSE_API_URL", "https://your-render-app.onrender.com")
+DEFAULT_API_URL = os.environ.get("LICENSE_API_URL", "https://bill-scrapper.vercel.app").rstrip("/")
 DEFAULT_ADMIN_SECRET = os.environ.get("ADMIN_SECRET", "")
 
 # VS Code Dark+ Palette

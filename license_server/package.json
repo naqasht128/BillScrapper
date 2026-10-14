@@ -1,6 +1,6 @@
 {
   "name": "billscrapper-license-server",
-  "version": "1.0.0",
+  "version": "1.2.0",
   "description": "Bill Scrapper Licensing, Subscription, and Device-Limiting API",
   "main": "server.js",
   "scripts": {

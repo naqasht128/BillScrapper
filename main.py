@@ -33,7 +33,7 @@ from lxml import etree
 from openpyxl import load_workbook
 
 URL = "https://bill.pitc.com.pk/pescobill"
-LICENSE_API_URL = os.environ.get("LICENSE_API_URL", "https://your-render-app.onrender.com")
+LICENSE_API_URL = os.environ.get("LICENSE_API_URL", "https://bill-scrapper.vercel.app").rstrip("/")
 
 
 def resource_path(relative_path):
@@ -1134,7 +1134,7 @@ LOG_BG = "#1e1e1e"             # Same as IDE code editor canvas
 LOG_FG = "#d4d4d4"             # Clean readable terminal text
 
 # Version & GitHub repository details for automated updates
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.2.0"
 GITHUB_REPO = "naqasht128/BillScrapper"
 GITHUB_API_LATEST = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 

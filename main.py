@@ -1133,9 +1133,10 @@ BTN_DISABLED_FG = "#666666"    # Disabled button text
 LOG_BG = "#1e1e1e"             # Same as IDE code editor canvas
 LOG_FG = "#d4d4d4"             # Clean readable terminal text
 
-# Version & Secure License/Update server endpoint (keeps GitHub repo 100% private)
-APP_VERSION = "1.2.0"
-UPDATE_API_URL = f"{LICENSE_API_URL}/api/updates/latest"
+# Version & GitHub repository details for automated updates
+APP_VERSION = "1.2.1"
+GITHUB_REPO = "naqasht128/BillScrapper"
+GITHUB_API_LATEST = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 
 
 def parse_version_tuple(v: str) -> tuple[int, ...]:
@@ -1147,7 +1148,7 @@ def parse_version_tuple(v: str) -> tuple[int, ...]:
 
 
 class UpdateInfo:
-    """Metadata regarding an available release from the secure update server."""
+    """Metadata regarding an available release from GitHub."""
     def __init__(self, version: str, download_url: str, file_name: str, file_size: int, release_notes: str = ""):
         self.version = version
         self.download_url = download_url
@@ -1157,51 +1158,61 @@ class UpdateInfo:
 
 
 def check_for_updates(current_version: str = APP_VERSION) -> UpdateInfo | None:
-    """Query secure licensing & update API to check if a newer version is available.
-    
-    This calls our private Vercel backend, ensuring our GitHub repository
-    and Python source code remain 100% private and protected.
-    """
+    """Query GitHub Releases API to check if a newer version is available."""
     try:
         headers = {
             "User-Agent": "BillScrapper-DesktopApp",
-            "Accept": "application/json",
+            "Accept": "application/vnd.github.v3+json",
         }
-        resp = requests.get(UPDATE_API_URL, headers=headers, timeout=8)
+        resp = requests.get(GITHUB_API_LATEST, headers=headers, timeout=6)
         if resp.status_code != 200:
             return None
         data = resp.json()
-        target_version = data.get("version", "").strip().lstrip("v")
-        download_url = data.get("download_url", "").strip()
-        if not target_version or not download_url:
+        tag = data.get("tag_name", "").strip()
+        if not tag:
             return None
 
         # Compare versions
-        if parse_version_tuple(target_version) <= parse_version_tuple(current_version):
+        if parse_version_tuple(tag) <= parse_version_tuple(current_version):
             return None
 
-        file_name = data.get("file_name", "BillScrapper-Setup.exe")
+        # Determine target executable asset for current OS
+        assets = data.get("assets", [])
+        is_win = sys.platform == "win32"
+        target_asset = None
+        for asset in assets:
+            name = asset.get("name", "")
+            if is_win and name.lower().endswith(".exe"):
+                target_asset = asset
+                break
+            elif not is_win and (name == "BillScrapper" or not name.lower().endswith(".exe")):
+                target_asset = asset
+                break
+
+        if not target_asset or not target_asset.get("browser_download_url"):
+            return None
+
         return UpdateInfo(
-            version=target_version,
-            download_url=download_url,
-            file_name=file_name,
-            file_size=data.get("file_size", 0),
-            release_notes=data.get("release_notes", ""),
+            version=tag,
+            download_url=target_asset["browser_download_url"],
+            file_name=target_asset.get("name", "BillScrapper"),
+            file_size=target_asset.get("size", 0),
+            release_notes=data.get("body", ""),
         )
     except Exception:
         return None
 
 
 def install_and_restart(new_file_path: str, root_window: tk.Tk):
-    """Run downloaded Setup installer or replace executable and restart."""
+    """Replace running executable with new_file_path and relaunch."""
     is_frozen = getattr(sys, "frozen", False)
 
     if not is_frozen:
-        # Running from Python source (.py in development)
+        # Running from Python source (.py)
         msg = (
             f"Update downloaded successfully to:\n{new_file_path}\n\n"
             "Because you are running from Python source code, you can update via 'git pull' "
-            "or run the downloaded Setup installer directly."
+            "or run the downloaded standalone executable directly."
         )
         messagebox.showinfo("Update Downloaded", msg)
         try:
@@ -1216,26 +1227,6 @@ def install_and_restart(new_file_path: str, root_window: tk.Tk):
     pid = os.getpid()
 
     if sys.platform == "win32":
-        is_setup_installer = "setup" in os.path.basename(new_file_path).lower()
-
-        if is_setup_installer:
-            # Clean Inno Setup silent install: closes app, updates files, and restarts
-            try:
-                DETACHED_FLAGS = 0x08000000 | 0x00000200
-                subprocess.Popen(
-                    [new_file_path, "/SILENT", "/CLOSEAPPLICATIONS", "/RESTARTAPPLICATIONS"],
-                    creationflags=DETACHED_FLAGS,
-                    close_fds=True,
-                )
-            except Exception:
-                subprocess.Popen([new_file_path])
-            try:
-                root_window.destroy()
-            except Exception:
-                pass
-            sys.exit(0)
-
-        # Fallback for standalone portable executable replacement
         bat_path = Path(tempfile.gettempdir()) / f"billscrapper_patch_{pid}.bat"
         bat_content = f"""@echo off
 setlocal
@@ -1268,10 +1259,7 @@ del %NEW_EXE% >nul 2>&1
             creationflags=DETACHED_FLAGS,
             close_fds=True,
         )
-        try:
-            root_window.destroy()
-        except Exception:
-            pass
+        root_window.destroy()
         sys.exit(0)
 
     else:

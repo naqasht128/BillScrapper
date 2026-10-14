@@ -67,23 +67,3 @@ CREATE POLICY "Deny anon access on license_devices" ON public.license_devices
 -- ====================================================================
 COMMENT ON TABLE public.licenses IS 'Serial keys, plans, and activation lifecycles for Bill Scrapper.';
 COMMENT ON TABLE public.license_devices IS 'Hardware devices bound to active licenses with device limits.';
-
--- ====================================================================
--- 3. APP UPDATES TABLE
--- ====================================================================
-CREATE TABLE IF NOT EXISTS public.app_updates (
-    version VARCHAR(32) PRIMARY KEY,
-    download_url TEXT NOT NULL,
-    file_name VARCHAR(128) DEFAULT 'BillScrapper-Setup.exe',
-    release_notes TEXT,
-    created_at TIMESTAMPTZ DEFAULT NOW(),
-    updated_at TIMESTAMPTZ DEFAULT NOW()
-);
-
-ALTER TABLE public.app_updates ENABLE ROW LEVEL SECURITY;
-DROP POLICY IF EXISTS "Allow anon read on app_updates" ON public.app_updates;
-CREATE POLICY "Allow anon read on app_updates" ON public.app_updates
-    FOR SELECT TO anon USING (true);
-DROP POLICY IF EXISTS "Deny anon modify on app_updates" ON public.app_updates;
-CREATE POLICY "Deny anon modify on app_updates" ON public.app_updates
-    FOR INSERT TO anon WITH CHECK (false);

@@ -125,6 +125,8 @@ def normalized_key(value):
         "in_bill_fix_charges_estimated": "In_Bill_Fix_Charges (Estimated)",
         "kvarh_units": "kvarh_units_1",
         "mdi_units": "mdi_units_1",
+        "scrape_status": "Remarks",
+        "remarks": "Remarks",
     }
     if key in renamed:
         return renamed[key]
@@ -181,6 +183,8 @@ def is_dropped(name, source_col=None, legacy_columns=False):
     key = field_key(name)
     normalized = normalized_key(name)
     if is_preserved_meter_key(normalized) or is_preserved_meter_key(key):
+        return False
+    if key in {"remarks", "scrape_status"} or normalized == "Remarks":
         return False
     if source_col is not None:
         in_dropped_range = any(start <= source_col <= end for start, end in DROP_RANGES)
@@ -259,11 +263,11 @@ def order_output_headers(headers):
         "In_Bill_Fix_Charges (Estimated)",
     ]
     ordered += [name for name in meter_order if name in headers and name not in ordered]
-    ordered += [name for name in headers if name not in ordered and name not in {"feeder", "scrape_status"}]
+    ordered += [name for name in headers if name not in ordered and name not in {"feeder", "Remarks", "scrape_status"}]
     if "feeder" in headers:
         ordered.append("feeder")
-    if "scrape_status" in headers:
-        ordered.append("scrape_status")
+    if "Remarks" in headers or "scrape_status" in headers:
+        ordered.append("Remarks")
     return ordered
 
 
@@ -810,10 +814,10 @@ class PITCBillScraper:
             raw = format(Decimal(raw), "f")
         account = re.sub(r"\D", "", raw)
         if not re.fullmatch(r"\d{10,14}", account):
-            return {"_account": account, "scrape_status": "invalid account number"}
+            return {"_account": account, "Remarks": "Bill not Found", "scrape_status": "invalid account number"}
         try:
             soup = self.search(account)
-            out = {"_account": account, "scrape_status": "ok"}
+            out = {"_account": account, "Remarks": "Done", "scrape_status": "ok"}
             self.put_general_pairs(out, soup)
             self.put_general_text_pairs(out, soup)
             for cell in soup.select(".grid-col-cell"):
@@ -923,7 +927,7 @@ class PITCBillScraper:
 
             return out
         except Exception as exc:
-            return {"_account": account, "scrape_status": f"error: {exc}"}
+            return {"_account": account, "Remarks": "Bill not Found", "scrape_status": f"error: {exc}"}
 
     def update_workbook(self, path, progress=None, stop_event=None):
         if path.suffix.lower() not in SUPPORTED_EXTENSIONS:
@@ -995,7 +999,7 @@ class PITCBillScraper:
         all_keys.add("AC No.")
         all_keys.add("feeder")
         all_keys.add("adjustments")
-        all_keys.add("scrape_status")
+        all_keys.add("Remarks")
 
         final_headers = order_output_headers([k for k in all_keys if not is_dropped(k)])
 
@@ -1011,7 +1015,11 @@ class PITCBillScraper:
         for row_idx, record in enumerate(row_records, 2):
             for col_idx, h in enumerate(final_headers, 1):
                 val = record.get(h)
-                if val is not None and should_be_numeric(h):
+                if h == "Remarks":
+                    raw_val = val if val is not None else record.get("scrape_status")
+                    val_str = str(raw_val).strip().lower() if raw_val is not None else ""
+                    val = "Done" if val_str in ("done", "ok", "processed") else "Bill not Found"
+                elif val is not None and should_be_numeric(h):
                     val = excel_numeric_value(val)
                 sheet.cell(row_idx, col_idx).value = val if val is not None else ""
 
@@ -1022,40 +1030,159 @@ class PITCBillScraper:
 UI_FONT = "Segoe UI" if sys.platform == "win32" else "DejaVu Sans"
 MONO_FONT = "Consolas" if sys.platform == "win32" else "DejaVu Sans Mono"
 
+# Light-Dark Palette (Antigravity IDE / VS Code Dark+ theme)
+BG_DARK = "#1e1e1e"            # Soft neutral IDE dark gray
+CARD_BG = "#252526"            # IDE container / card panel background
+BORDER_COLOR = "#383838"       # Subtle, soft border without harsh contrast
+TEXT_WHITE = "#ffffff"         # Crisp white for titles & section headers (AGY IDE style)
+TEXT_MAIN = "#cccccc"          # Comfortable silver/off-white text (low glare)
+TEXT_MUTED = "#8b949e"         # Soft secondary text
+TEXT_HINT = "#767676"          # Muted hint text
+ACCENT_GREEN = "#238636"       # Soft matte green (GitHub/VS Code style)
+ACCENT_GREEN_HOVER = "#2ea043"
+ACCENT_RED = "#b83a3a"         # Soft matte red
+ACCENT_RED_HOVER = "#c93b3b"
+INPUT_BG = "#2d2d2d"           # Soft dark input field (not pitch black)
+BTN_SEC_BG = "#3a3d41"         # Standard IDE secondary button
+BTN_SEC_HOVER = "#45494e"      # Secondary button hover
+BTN_DISABLED_BG = "#282828"    # Disabled button background
+BTN_DISABLED_FG = "#666666"    # Disabled button text
+LOG_BG = "#1e1e1e"             # Same as IDE code editor canvas
+LOG_FG = "#d4d4d4"             # Clean readable terminal text
+
 
 class BillScraperApp(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("Bill Scrapper")
+        self.configure(bg=BG_DARK)
+        self.resizable(True, True)
+        self.geometry("640x600")
+        self.minsize(580, 520)
+
         self._icon_img = None
         try:
-            png_file = resource_path("assets/billscrapper-icon.png")
-            if os.path.exists(png_file):
-                self._icon_img = tk.PhotoImage(file=png_file)
-                self.iconphoto(True, self._icon_img)
-            elif sys.platform == "win32":
+            if sys.platform == "win32":
                 icon_file = resource_path("assets/billscrapper.ico")
                 if not os.path.exists(icon_file):
                     icon_file = resource_path("assets/mdiscrapper.ico")
-                self.iconbitmap(icon_file)
+                if os.path.exists(icon_file):
+                    self.iconbitmap(icon_file)
+            else:
+                png_file = resource_path("assets/billscrapper-icon.png")
+                if os.path.exists(png_file):
+                    self._icon_img = tk.PhotoImage(file=png_file)
+                    self.iconphoto(True, self._icon_img)
         except Exception:
             pass
-        self.geometry("640x600")
-        self.minsize(580, 520)
+
+        # Windows 11 natively supports DWM immersive dark mode for Win32 apps.
+        # On Windows 10, DWMWA_USE_IMMERSIVE_DARK_MODE causes a white title bar with
+        # invisible caption buttons and black box text artifacts, so we restrict it to build >= 22000.
+        if sys.platform == "win32":
+            try:
+                if sys.getwindowsversion().build >= 22000:
+                    import ctypes
+                    self.update()
+                    hwnd = ctypes.windll.user32.GetParent(self.winfo_id()) or self.winfo_id()
+                    val = ctypes.c_int(2)
+                    ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                        hwnd, 20, ctypes.byref(val), ctypes.sizeof(val)
+                    )
+                    SWP_FLAGS = 0x0001 | 0x0002 | 0x0004 | 0x0020
+                    ctypes.windll.user32.SetWindowPos(hwnd, 0, 0, 0, 0, 0, SWP_FLAGS)
+            except Exception:
+                pass
 
         self.style = ttk.Style(self)
         try:
             self.style.theme_use("clam")
         except Exception:
             pass
+
+        self.style.configure(".", background=CARD_BG, foreground=TEXT_MAIN)
+        self.style.configure("TFrame", background=BG_DARK)
+        self.style.configure("Root.TFrame", background=BG_DARK)
+        self.style.configure("Card.TFrame", background=CARD_BG)
+
+        self.style.configure(
+            "TLabelframe",
+            background=CARD_BG,
+            bordercolor=BORDER_COLOR,
+            lightcolor=BORDER_COLOR,
+            darkcolor=BORDER_COLOR,
+            relief="solid",
+        )
+        self.style.configure(
+            "TLabelframe.Label",
+            background=CARD_BG,
+            foreground=TEXT_WHITE,
+            font=(UI_FONT, 9, "bold"),
+        )
+
+        self.style.configure("TLabel", background=CARD_BG, foreground=TEXT_MAIN, font=(UI_FONT, 9))
+        self.style.configure("Root.TLabel", background=BG_DARK, foreground=TEXT_MAIN, font=(UI_FONT, 9))
+        self.style.configure("Title.TLabel", background=BG_DARK, foreground=TEXT_WHITE, font=(UI_FONT, 16, "bold"))
+        self.style.configure("Sub.TLabel", background=BG_DARK, foreground=TEXT_MUTED, font=(UI_FONT, 9))
+        self.style.configure("Status.TLabel", background=BG_DARK, foreground=TEXT_MAIN, font=(UI_FONT, 9))
+        self.style.configure("Muted.TLabel", background=CARD_BG, foreground=TEXT_MUTED, font=(UI_FONT, 8, "italic"))
+        self.style.configure("StatTitle.TLabel", background=CARD_BG, foreground=TEXT_MUTED, font=(UI_FONT, 9))
+        self.style.configure("StatVal.TLabel", background=CARD_BG, foreground=TEXT_WHITE, font=(UI_FONT, 9, "bold"))
+        self.style.configure("StatOk.TLabel", background=CARD_BG, foreground="#89d185", font=(UI_FONT, 9, "bold"))
+        self.style.configure("StatErr.TLabel", background=CARD_BG, foreground="#f14c4c", font=(UI_FONT, 9, "bold"))
+
+        self.style.configure(
+            "TEntry",
+            fieldbackground=INPUT_BG,
+            foreground=TEXT_WHITE,
+            bordercolor=BORDER_COLOR,
+            lightcolor=BORDER_COLOR,
+            darkcolor=BORDER_COLOR,
+            insertcolor=TEXT_WHITE,
+        )
+        self.style.configure(
+            "TSpinbox",
+            fieldbackground=INPUT_BG,
+            foreground=TEXT_WHITE,
+            bordercolor=BORDER_COLOR,
+            lightcolor=BORDER_COLOR,
+            darkcolor=BORDER_COLOR,
+            arrowcolor=TEXT_MUTED,
+            insertcolor=TEXT_WHITE,
+        )
+
+        self.style.configure(
+            "TButton",
+            background=BTN_SEC_BG,
+            foreground=TEXT_MAIN,
+            bordercolor=BORDER_COLOR,
+            lightcolor=BORDER_COLOR,
+            darkcolor=BORDER_COLOR,
+            focuscolor="none",
+            padding=(10, 4),
+        )
+        self.style.map(
+            "TButton",
+            background=[("active", BTN_SEC_HOVER), ("pressed", "#2d2d2d"), ("disabled", BTN_DISABLED_BG)],
+            foreground=[("disabled", BTN_DISABLED_FG)],
+        )
+
         self.style.configure(
             "Green.Horizontal.TProgressbar",
-            troughcolor="#e2e8f0",
-            background="#16a34a",
-            lightcolor="#16a34a",
-            darkcolor="#15803d",
-            bordercolor="#cbd5e1",
+            troughcolor=INPUT_BG,
+            background=ACCENT_GREEN,
+            lightcolor=ACCENT_GREEN_HOVER,
+            darkcolor="#1d6e2e",
+            bordercolor=BORDER_COLOR,
         )
+        self.style.configure(
+            "Vertical.TScrollbar",
+            background=BTN_SEC_BG,
+            troughcolor=BG_DARK,
+            bordercolor=BORDER_COLOR,
+            arrowcolor=TEXT_MUTED,
+        )
+        self.style.map("Vertical.TScrollbar", background=[("active", BTN_SEC_HOVER)])
 
         self.events = queue.Queue()
         self.stop_event = threading.Event()
@@ -1072,16 +1199,16 @@ class BillScraperApp(tk.Tk):
         self.after(100, self.drain_events)
 
     def build_ui(self):
-        root = ttk.Frame(self, padding=(18, 14, 18, 14))
+        root = ttk.Frame(self, style="Root.TFrame", padding=(18, 14, 18, 14))
         root.pack(fill="both", expand=True)
 
-        header_frame = ttk.Frame(root)
+        header_frame = ttk.Frame(root, style="Root.TFrame")
         header_frame.pack(fill="x", pady=(0, 12))
 
-        title_lbl = ttk.Label(header_frame, text="Bill Scrapper", font=(UI_FONT, 16, "bold"), foreground="#1e3a8a")
+        title_lbl = ttk.Label(header_frame, text="Bill Scrapper", style="Title.TLabel")
         title_lbl.pack(anchor="w")
 
-        sub_lbl = ttk.Label(header_frame, text="Developed by Tahir Naqash | Automated Bill Scraping & Fixed Charges Audit", font=(UI_FONT, 9), foreground="#64748b")
+        sub_lbl = ttk.Label(header_frame, text="Developed by Tahir Naqash | Automated Bill Scraping & Fixed Charges Audit", style="Sub.TLabel")
         sub_lbl.pack(anchor="w", pady=(2, 0))
 
         files_frame = ttk.LabelFrame(root, text=" Target Workbook ", padding=10)
@@ -1095,63 +1222,69 @@ class BillScraperApp(tk.Tk):
         browse_btn.grid(row=0, column=2, pady=4)
         files_frame.columnconfigure(1, weight=1)
 
-        mid_frame = ttk.Frame(root)
+        mid_frame = ttk.Frame(root, style="Root.TFrame")
         mid_frame.pack(fill="x", pady=(0, 10))
 
         settings_box = ttk.LabelFrame(mid_frame, text=" Settings ", padding=8)
         settings_box.pack(side="left", fill="both", expand=True, padx=(0, 6))
 
-        ttk.Label(settings_box, text="Delay (seconds):", font=(UI_FONT, 9)).grid(row=0, column=0, sticky="w", pady=2)
+        ttk.Label(settings_box, text="Delay (seconds):").grid(row=0, column=0, sticky="w", pady=2)
         spin = ttk.Spinbox(settings_box, from_=0.5, to=30.0, increment=0.5, textvariable=self.delay_var, width=6)
         spin.grid(row=0, column=1, sticky="w", padx=(6, 4), pady=2)
-        ttk.Label(settings_box, text="(Default 2.0s prevents PITC blocking)", font=(UI_FONT, 8, "italic"), foreground="#64748b").grid(row=1, column=0, columnspan=2, sticky="w", pady=(2, 0))
+        ttk.Label(settings_box, text="(Default 2.0s prevents PITC blocking)", style="Muted.TLabel").grid(row=1, column=0, columnspan=2, sticky="w", pady=(2, 0))
 
         stats_box = ttk.LabelFrame(mid_frame, text=" Progress Summary ", padding=8)
         stats_box.pack(side="right", fill="both", expand=True, padx=(6, 0))
 
-        ttk.Label(stats_box, text="Total:").grid(row=0, column=0, sticky="w", padx=4)
-        ttk.Label(stats_box, textvariable=self.total_var, font=(UI_FONT, 9, "bold")).grid(row=0, column=1, sticky="w", padx=4)
+        ttk.Label(stats_box, text="Total:", style="StatTitle.TLabel").grid(row=0, column=0, sticky="w", padx=4)
+        ttk.Label(stats_box, textvariable=self.total_var, style="StatVal.TLabel").grid(row=0, column=1, sticky="w", padx=4)
 
-        ttk.Label(stats_box, text="OK:").grid(row=0, column=2, sticky="w", padx=4)
-        ttk.Label(stats_box, textvariable=self.ok_var, font=(UI_FONT, 9, "bold"), foreground="#15803d").grid(row=0, column=3, sticky="w", padx=4)
+        ttk.Label(stats_box, text="Processed:", style="StatTitle.TLabel").grid(row=0, column=2, sticky="w", padx=4)
+        ttk.Label(stats_box, textvariable=self.ok_var, style="StatOk.TLabel").grid(row=0, column=3, sticky="w", padx=4)
 
-        ttk.Label(stats_box, text="Errors:").grid(row=0, column=4, sticky="w", padx=4)
-        ttk.Label(stats_box, textvariable=self.err_var, font=(UI_FONT, 9, "bold"), foreground="#b91c1c").grid(row=0, column=5, sticky="w", padx=4)
+        ttk.Label(stats_box, text="Errors:", style="StatTitle.TLabel").grid(row=0, column=4, sticky="w", padx=4)
+        ttk.Label(stats_box, textvariable=self.err_var, style="StatErr.TLabel").grid(row=0, column=5, sticky="w", padx=4)
 
         self.progress = ttk.Progressbar(root, mode="determinate", style="Green.Horizontal.TProgressbar")
         self.progress.pack(fill="x", pady=(4, 6))
 
-        status_lbl = ttk.Label(root, textvariable=self.status_var, font=(UI_FONT, 9), foreground="#0f172a")
+        status_lbl = ttk.Label(root, textvariable=self.status_var, style="Status.TLabel")
         status_lbl.pack(anchor="w", pady=(0, 6))
 
         log_frame = ttk.LabelFrame(root, text=" Live Execution Log ", padding=6)
         log_frame.pack(fill="both", expand=True, pady=(0, 10))
 
-        self.log = tk.Text(log_frame, height=10, state="disabled", wrap="word", font=(MONO_FONT, 9), bg="#f8fafc", fg="#0f172a")
-        self.log.tag_config("ok", foreground="#16a34a")
-        self.log.tag_config("err", foreground="#dc2626")
-        self.log.tag_config("info", foreground="#2563eb")
-        self.log.tag_config("bold", font=(MONO_FONT, 9, "bold"))
+        self.log = tk.Text(
+            log_frame, height=10, state="disabled", wrap="word",
+            font=(MONO_FONT, 9), bg=LOG_BG, fg=LOG_FG,
+            insertbackground=TEXT_WHITE, selectbackground="#264f78", selectforeground="#ffffff",
+            relief="flat", bd=1, highlightthickness=1, highlightbackground=BORDER_COLOR, highlightcolor=BORDER_COLOR
+        )
+        self.log.tag_config("ok", foreground="#89d185")
+        self.log.tag_config("err", foreground="#f14c4c")
+        self.log.tag_config("info", foreground=TEXT_MAIN)
+        self.log.tag_config("bold", foreground=TEXT_WHITE, font=(MONO_FONT, 9, "bold"))
 
         scroll = ttk.Scrollbar(log_frame, orient="vertical", command=self.log.yview)
         self.log.configure(yscrollcommand=scroll.set)
         self.log.pack(side="left", fill="both", expand=True)
         scroll.pack(side="right", fill="y")
 
-        btn_bar = ttk.Frame(root)
+        btn_bar = ttk.Frame(root, style="Root.TFrame")
         btn_bar.pack(fill="x")
 
         self.start_button = tk.Button(
             btn_bar, text="▶  Start Scraping", command=self.start,
-            bg="#16a34a", fg="white", activebackground="#15803d", activeforeground="white",
-            font=(UI_FONT, 10, "bold"), relief="raised", padx=16, pady=4, cursor="hand2"
+            bg=ACCENT_GREEN, fg="white", activebackground=ACCENT_GREEN_HOVER, activeforeground="white",
+            font=(UI_FONT, 10, "bold"), relief="flat", padx=16, pady=5, cursor="hand2", bd=0
         )
         self.start_button.pack(side="left")
 
         self.cancel_button = tk.Button(
             btn_bar, text="⏹  Stop", command=self.cancel,
-            bg="#dc2626", fg="white", activebackground="#b91c1c", activeforeground="white",
-            font=(UI_FONT, 10, "bold"), relief="raised", padx=14, pady=4, state="disabled", cursor="hand2"
+            bg=BTN_DISABLED_BG, fg="white", activebackground=ACCENT_RED_HOVER, activeforeground="white",
+            font=(UI_FONT, 10, "bold"), relief="flat", padx=14, pady=5, state="disabled", cursor="hand2", bd=0,
+            disabledforeground=BTN_DISABLED_FG
         )
         self.cancel_button.pack(side="left", padx=(10, 0))
 
@@ -1222,8 +1355,8 @@ class BillScraperApp(tk.Tk):
         self.err_var.set("0")
         self.total_var.set("0")
 
-        self.start_button.configure(state="disabled")
-        self.cancel_button.configure(state="normal")
+        self.start_button.configure(state="disabled", bg=BTN_DISABLED_BG)
+        self.cancel_button.configure(state="normal", bg=ACCENT_RED)
         self.write_log(f"--- Starting Scraping on: {path.name} ---", "info")
         self.write_log(f"Request delay: {delay}s | Calculating Actual MDI (max diff x MF) & Actual Fix Charges...", "info")
 
@@ -1232,7 +1365,7 @@ class BillScraperApp(tk.Tk):
     def run(self, path, delay):
         try:
             def progress(done, total, row):
-                self.events.put(("progress", done, total, row.get("_account", ""), row.get("scrape_status", "")))
+                self.events.put(("progress", done, total, row.get("_account", ""), row.get("scrape_status", row.get("Remarks", ""))))
 
             PITCBillScraper(delay=delay).update_workbook(path, progress, self.stop_event)
             self.events.put(("done", str(path), self.stop_event.is_set()))
@@ -1242,7 +1375,7 @@ class BillScraperApp(tk.Tk):
     def cancel(self):
         self.stop_event.set()
         self.status_var.set("Finishing current bill, then stopping...")
-        self.cancel_button.configure(state="disabled")
+        self.cancel_button.configure(state="disabled", bg=BTN_DISABLED_BG)
         self.write_log("Stop requested. Waiting for current account to finish...", "err")
 
     def drain_events(self):
@@ -1255,19 +1388,22 @@ class BillScraperApp(tk.Tk):
                     self.total_var.set(str(total))
                     self.status_var.set(f"Processed {done} of {total} accounts...")
 
-                    if status == "ok":
+                    if status == "ok" or status == "Done" or status == "Processed":
                         self.success_count += 1
                         self.ok_var.set(str(self.success_count))
-                        self.write_log(f"[{done}/{total}] {account}: OK", "ok")
+                        self.write_log(f"[{done}/{total}] {account}: Processed", "ok")
                     else:
                         self.error_count += 1
                         self.err_var.set(str(self.error_count))
-                        self.write_log(f"[{done}/{total}] {account}: {status}", "err")
+                        if not status or status in ("invalid account number", "Bill not Found") or "no bill returned" in str(status).lower():
+                            self.write_log(f"[{done}/{total}] {account}: Bill not Found", "err")
+                        else:
+                            self.write_log(f"[{done}/{total}] {account}: Bill not Found ({status})", "err")
 
                 elif event[0] == "done":
                     _, path, cancelled = event
-                    self.start_button.configure(state="normal")
-                    self.cancel_button.configure(state="disabled")
+                    self.start_button.configure(state="normal", bg=ACCENT_GREEN)
+                    self.cancel_button.configure(state="disabled", bg=BTN_DISABLED_BG)
                     self.status_var.set("Stopped by user." if cancelled else "Completed successfully!")
                     self.write_log(
                         f"=== {'Scraping Stopped.' if cancelled else 'All Done! Successfully updated:'} {path} ===",
@@ -1280,8 +1416,8 @@ class BillScraperApp(tk.Tk):
                         )
 
                 elif event[0] == "error":
-                    self.start_button.configure(state="normal")
-                    self.cancel_button.configure(state="disabled")
+                    self.start_button.configure(state="normal", bg=ACCENT_GREEN)
+                    self.cancel_button.configure(state="disabled", bg=BTN_DISABLED_BG)
                     self.status_var.set("Failed with error.")
                     self.write_log("ERROR: " + event[1], "err")
                     messagebox.showerror("Export Failed", event[1])

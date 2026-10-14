@@ -49,6 +49,13 @@ Desktop UI application to scrape PITC (PESCO) electricity bills from account/ref
    - The consumer's connection/meter status is captured in the `status` column.
    - Excel rows are mapped strictly by column names to prevent any header shifting or data misalignment.
 
+10. **`Remarks` Audit Column**:
+    - Placed as the final column in the output.
+    - Shows `Done` for successfully scraped bills, and `Bill not Found` if an account is invalid, missing, or encounters an error.
+
+11. **Modern Dark Mode UI**:
+    - Sleek slate dark interface with real-time live execution logs, progress tracking, and Windows native immersive dark title bar support.
+
 ---
 
 ## 🚀 How to Run

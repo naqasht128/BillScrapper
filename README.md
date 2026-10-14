@@ -53,13 +53,46 @@ Desktop UI application to scrape PITC (PESCO) electricity bills from account/ref
 
 ## 🚀 How to Run
 
-### Method 1: Double Click `run.bat`
-Simply double-click the `run.bat` file in `D:\Projects\BillScrapper` to launch the application.
+### On Linux
 
-### Method 2: Command Line
-Open PowerShell or Command Prompt in the project folder and execute:
+#### Method 1: Bash Script (Recommended)
+Simply execute `./run.sh` in the terminal. It automatically configures the Python virtual environment (`.venv`), installs any missing packages, and launches the app:
 ```bash
-cd D:\Projects\BillScrapper
+./run.sh
+```
+
+#### Method 2: Manual Terminal Execution
+```bash
+# 1. Ensure system prerequisites are installed (Ubuntu/Debian)
+sudo apt update && sudo apt install -y python3-tk python3-venv
+
+# 2. Set up virtual environment and install dependencies
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+
+# 3. Launch application
+python main.py
+```
+
+#### Method 3: Desktop Application Menu Integration
+To add Bill Scrapper to your Linux application menu and desktop search:
+```bash
+./install_desktop_entry.sh
+```
+
+---
+
+### On Windows
+
+#### Method 1: Double Click `run.bat`
+Double-click `run.bat` in the project folder to launch the application.
+
+#### Method 2: Command Prompt / PowerShell
+```powershell
+python -m venv .venv
+.\.venv\Scripts\activate
+pip install -r requirements.txt
 python main.py
 ```
 
@@ -67,10 +100,10 @@ python main.py
 
 ## 📋 Input File Format
 
-- Prepare an Excel workbook (`.xlsx`).
+- Prepare an Excel (`.xlsx`) or LibreOffice Calc (`.ods`) workbook.
 - Put the 14-digit Account / Reference numbers in **Column A** (Row 1 can be `AC No.` or account numbers directly).
 - Optional: If you have existing statuses in a `status` column, they will be recognized.
-- Open the application, click **Browse...**, select your Excel file, and click **Start Scraping**.
+- Open the application, click **Browse...**, select your `.xlsx` or `.ods` file, and click **Start Scraping**.
 - The file is updated in place with all columns added and formatted.
 
 ---
@@ -78,10 +111,12 @@ python main.py
 ## 📦 Dependencies
 
 - Python 3.8+
-- `requests`
-- `beautifulsoup4`
-- `lxml`
-- `openpyxl`
+- System packages (Linux): `python3-tk`, `python3-venv` (and `binutils`, `libpython3-dev` if building binary)
+- Python packages:
+  - `requests`
+  - `beautifulsoup4`
+  - `lxml`
+  - `openpyxl`
 
 To install:
 ```bash
@@ -91,16 +126,25 @@ pip install pyinstaller
 
 ---
 
-## 🛠️ How to Build `.exe` (PyInstaller)
+## 🛠️ How to Build Standalone Executable (PyInstaller)
 
-Run the following command in your VS Code terminal / PowerShell in `D:\Projects\BillScrapper`:
-
-```powershell
-pyinstaller BillScrapper.spec
+### On Linux (ELF Binary)
+1. Install build prerequisites:
+```bash
+sudo apt install -y binutils libpython3-dev
 ```
-or manually:
-```powershell
-pyinstaller --noconsole --onefile --name "BillScrapper" --icon "assets\billscrapper.ico" --add-data "assets\billscrapper.ico;assets" --clean main.py
+2. Build standalone binary:
+```bash
+pyinstaller BillScrapper.spec --clean
+```
+The standalone binary `BillScrapper` will be generated in `dist/BillScrapper`. Run it with:
+```bash
+./dist/BillScrapper
 ```
 
-The standalone executable `BillScrapper.exe` will be generated in the `D:\Projects\BillScrapper\dist\` folder.
+### On Windows (`.exe` Binary)
+Run in PowerShell:
+```powershell
+pyinstaller BillScrapper.spec --clean
+```
+The standalone executable `BillScrapper.exe` will be generated in `dist\BillScrapper.exe`.

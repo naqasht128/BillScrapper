@@ -16,6 +16,10 @@ a = Analysis(
 )
 pyz = PYZ(a.pure)
 
+import sys
+
+exe_icon = ['assets/billscrapper.ico'] if sys.platform == 'win32' else None
+
 exe = EXE(
     pyz,
     a.scripts,
@@ -35,5 +39,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=['assets/billscrapper.ico'],
+    icon=exe_icon,
 )

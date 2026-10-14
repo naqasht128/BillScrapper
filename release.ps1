@@ -7,14 +7,17 @@ param (
 $venvPython = "$PSScriptRoot\.venv\Scripts\python.exe"
 if (Test-Path $venvPython) {
     $pythonCmd = $venvPython
-} else {
+}
+else {
     $pythonCmd = "python"
 }
 
 if ($Version -and $Message) {
     & $pythonCmd "$PSScriptRoot\release.py" $Version -m $Message
-} elseif ($Version) {
+}
+elseif ($Version) {
     & $pythonCmd "$PSScriptRoot\release.py" $Version
-} else {
+}
+else {
     & $pythonCmd "$PSScriptRoot\release.py"
 }

@@ -1241,7 +1241,7 @@ class UpdateDialog(tk.Toplevel):
 
         self.lbl_status = ttk.Label(
             container,
-            text="Connecting to GitHub Releases...",
+            text="Connecting to update server...",
             style="Root.TLabel",
         )
         self.lbl_status.pack(anchor="w", pady=(0, 8))
@@ -1312,7 +1312,7 @@ class UpdateDialog(tk.Toplevel):
         if not self.winfo_exists():
             return
         self.prog.configure(maximum=100, value=pct)
-        self.lbl_status.configure(text="Downloading package from GitHub...")
+        self.lbl_status.configure(text="Downloading update package...")
         self.lbl_details.configure(text=f"{pct}% ({downloaded_mb:.1f} MB / {total_mb:.1f} MB)")
 
     def _on_download_complete(self):
@@ -1333,6 +1333,69 @@ class UpdateDialog(tk.Toplevel):
             return
         messagebox.showerror("Update Error", f"Failed to download update:\n{err_msg}", parent=self)
         self.destroy()
+
+
+class AboutDialog(tk.Toplevel):
+    """Sleek modal dialog showing application and developer information."""
+    def __init__(self, parent: "BillScraperApp"):
+        super().__init__(parent)
+        self.title("About Bill Scrapper")
+        self.configure(bg=BG_DARK)
+        self.resizable(False, False)
+        self.transient(parent)
+        self.grab_set()
+
+        w, h = 380, 240
+        px = parent.winfo_rootx() + (parent.winfo_width() // 2) - (w // 2)
+        py = parent.winfo_rooty() + (parent.winfo_height() // 2) - (h // 2)
+        self.geometry(f"{w}x{h}+{max(0, px)}+{max(0, py)}")
+
+        container = ttk.Frame(self, style="Root.TFrame", padding=(20, 18, 20, 18))
+        container.pack(fill="both", expand=True)
+
+        app_title = ttk.Label(container, text="Bill Scrapper", style="Title.TLabel", font=(UI_FONT, 14, "bold"))
+        app_title.pack(anchor="w")
+
+        app_ver = ttk.Label(container, text=f"Version {APP_VERSION}", style="Sub.TLabel")
+        app_ver.pack(anchor="w", pady=(2, 10))
+
+        # Card box for developer info
+        info_card = ttk.Frame(container, style="Card.TFrame", padding=(14, 12))
+        info_card.pack(fill="x", pady=(0, 14))
+
+        dev_lbl = ttk.Label(
+            info_card,
+            text="Developed by TN Developers Co.",
+            font=(UI_FONT, 9, "bold"),
+            foreground=TEXT_WHITE,
+            background=CARD_BG,
+        )
+        dev_lbl.pack(anchor="w", pady=(0, 4))
+
+        email_lbl = ttk.Label(
+            info_card,
+            text="Email: tahir.naqash4@gmail.com",
+            font=(UI_FONT, 9),
+            foreground=TEXT_MAIN,
+            background=CARD_BG,
+        )
+        email_lbl.pack(anchor="w", pady=(0, 2))
+
+        contact_lbl = ttk.Label(
+            info_card,
+            text="Contact: 03339962474",
+            font=(UI_FONT, 9),
+            foreground=TEXT_MAIN,
+            background=CARD_BG,
+        )
+        contact_lbl.pack(anchor="w")
+
+        btn_box = ttk.Frame(container, style="Root.TFrame")
+        btn_box.pack(fill="x")
+
+        close_btn = ttk.Button(btn_box, text="Close", command=self.destroy)
+        close_btn.pack(side="right")
+        close_btn.focus_set()
 
 
 class BillScraperApp(tk.Tk):
@@ -1510,7 +1573,7 @@ class BillScraperApp(tk.Tk):
         )
         self.check_update_btn.pack(side="left")
 
-        sub_lbl = ttk.Label(header_frame, text="Developed by Tahir Naqash | Automated Bill Scraping & Fixed Charges Audit", style="Sub.TLabel")
+        sub_lbl = ttk.Label(header_frame, text="Automated Bill Scraping & Fixed Charges Audit", style="Sub.TLabel")
         sub_lbl.pack(anchor="w", pady=(2, 0))
 
         # Notification banner for available updates (hidden by default)
@@ -1621,8 +1684,11 @@ class BillScraperApp(tk.Tk):
         )
         self.cancel_button.pack(side="left", padx=(10, 0))
 
+        self.about_btn = ttk.Button(btn_bar, text="About", command=self.show_about)
+        self.about_btn.pack(side="right")
+
         self.open_btn = ttk.Button(btn_bar, text="Open File Folder", command=self.open_output_folder)
-        self.open_btn.pack(side="right")
+        self.open_btn.pack(side="right", padx=(0, 8))
 
     def choose_input(self):
         path = filedialog.askopenfilename(
@@ -1636,6 +1702,9 @@ class BillScraperApp(tk.Tk):
         if path:
             self.input_var.set(path)
             self.status_var.set(f"Selected: {Path(path).name}")
+
+    def show_about(self):
+        AboutDialog(self)
 
     def open_output_folder(self):
         val = self.input_var.get().strip()
@@ -1749,8 +1818,8 @@ class BillScraperApp(tk.Tk):
                 self.events.put(("update_check_error", str(exc)))
 
     def manual_update_check(self):
-        self.status_var.set("Checking for updates on GitHub...")
-        self.write_log(f"Checking GitHub for newer releases (current: v{APP_VERSION})...", "info")
+        self.status_var.set("Checking for updates...")
+        self.write_log(f"Checking for newer releases (current: v{APP_VERSION})...", "info")
         threading.Thread(target=self._bg_update_check, args=(True,), daemon=True).start()
 
     def drain_events(self):

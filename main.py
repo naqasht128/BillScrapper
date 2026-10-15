@@ -1140,7 +1140,7 @@ LOG_BG = "#1e1e1e"             # Same as IDE code editor canvas
 LOG_FG = "#d4d4d4"             # Clean readable terminal text
 
 # Version & Secure License/Update server endpoint (keeps GitHub repo 100% private)
-APP_VERSION = "1.2.5"
+APP_VERSION = "1.2.6"
 UPDATE_API_URL = f"{LICENSE_API_URL}/api/updates/latest"
 
 
@@ -1223,6 +1223,14 @@ def install_and_restart(new_file_path: str, root_window: tk.Tk):
 
     if sys.platform == "win32":
         is_setup_installer = "setup" in os.path.basename(new_file_path).lower()
+        if not is_setup_installer and os.path.exists(new_file_path):
+            try:
+                with open(new_file_path, "rb") as f:
+                    chunk = f.read(65536)
+                    if b"Inno Setup" in chunk or b"InnoSetup" in chunk:
+                        is_setup_installer = True
+            except Exception:
+                pass
 
         if is_setup_installer:
             # Clean Inno Setup silent install: closes app, updates files, and restarts
@@ -1424,8 +1432,10 @@ class UpdateDialog(tk.Toplevel):
 
     def _download_worker(self):
         try:
-            ext = ".exe" if sys.platform == "win32" else ""
-            tpath = Path(tempfile.gettempdir()) / f"BillScrapper_update_{self.info.version}_{int(time.time())}{ext}"
+            fname = self.info.file_name or ("BillScrapper-Setup.exe" if sys.platform == "win32" else "BillScrapper")
+            if sys.platform == "win32" and not fname.lower().endswith(".exe"):
+                fname += ".exe"
+            tpath = Path(tempfile.gettempdir()) / f"update_{int(time.time())}_{fname}"
             self.temp_file = str(tpath)
 
             headers = {"User-Agent": "BillScrapper-DesktopApp"}

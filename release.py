@@ -24,6 +24,16 @@ import subprocess
 import sys
 from pathlib import Path
 
+# Fix Windows cp1252 console encoding for emojis and Unicode characters
+try:
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
+
+
 
 ROOT_DIR = Path(__file__).resolve().parent
 MAIN_PY = ROOT_DIR / "main.py"
@@ -82,6 +92,22 @@ def update_main_version(new_version: str):
     print(f"  ✔ Updated main.py: APP_VERSION = \"{new_version}\"")
 
 
+def update_installer_version(new_version: str):
+    """Write new AppVersion into installer.iss if it exists."""
+    installer_iss = ROOT_DIR / "installer.iss"
+    if not installer_iss.exists():
+        return
+    content = installer_iss.read_text(encoding="utf-8")
+    new_content, count = re.subn(
+        r'#define\s+AppVersion\s+["\'][^"\']+["\']',
+        f'#define AppVersion "{new_version}"',
+        content
+    )
+    if count > 0:
+        installer_iss.write_text(new_content, encoding="utf-8")
+        print(f"  ✔ Updated installer.iss: AppVersion = \"{new_version}\"")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Bill Scrapper - Automated Release & Update Publisher")
     parser.add_argument("version", nargs="?", help="New version number (e.g. 1.2.1)")
@@ -128,9 +154,10 @@ def main():
             sys.exit(1)
         print("  ✔ Python syntax check passed.")
 
-    # 2. Update APP_VERSION in main.py
-    print(f"\n[Step 2/5] Updating version in main.py to {target_ver}...")
+    # 2. Update APP_VERSION in main.py and installer.iss
+    print(f"\n[Step 2/5] Updating version in main.py and installer.iss to {target_ver}...")
     update_main_version(target_ver)
+    update_installer_version(target_ver)
 
     # 3. Git Stage & Commit
     print("\n[Step 3/5] Staging code changes & committing...")

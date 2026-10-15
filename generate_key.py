@@ -96,6 +96,35 @@ def generate_key_api(api_url: str, admin_secret: str, plan_type: str) -> dict:
     return data
 
 
+def set_dark_title_bar(window: tk.Tk | tk.Toplevel):
+    """Enable native Windows 10/11 immersive dark mode title bar."""
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+        window.update_idletasks()
+        hwnds = []
+        try:
+            hwnds.append(int(window.wm_frame(), 16))
+        except Exception:
+            pass
+        try:
+            parent_h = ctypes.windll.user32.GetParent(window.winfo_id())
+            if parent_h:
+                hwnds.append(parent_h)
+        except Exception:
+            pass
+        hwnds.append(window.winfo_id())
+
+        value = ctypes.c_int(1)
+        for h in set(hwnds):
+            if h:
+                if ctypes.windll.dwmapi.DwmSetWindowAttribute(h, 20, ctypes.byref(value), ctypes.sizeof(value)) != 0:
+                    ctypes.windll.dwmapi.DwmSetWindowAttribute(h, 19, ctypes.byref(value), ctypes.sizeof(value))
+    except Exception:
+        pass
+
+
 class KeyGeneratorGUI(tk.Tk):
     def __init__(self):
         super().__init__()
@@ -103,6 +132,7 @@ class KeyGeneratorGUI(tk.Tk):
         self.configure(bg=BG_DARK)
         self.geometry("560x650")
         self.minsize(520, 600)
+        set_dark_title_bar(self)
 
         try:
             if sys.platform == "win32":

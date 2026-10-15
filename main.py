@@ -1140,7 +1140,7 @@ LOG_BG = "#1e1e1e"             # Same as IDE code editor canvas
 LOG_FG = "#d4d4d4"             # Clean readable terminal text
 
 # Version & Secure License/Update server endpoint (keeps GitHub repo 100% private)
-APP_VERSION = "1.2.2"
+APP_VERSION = "1.2.3"
 UPDATE_API_URL = f"{LICENSE_API_URL}/api/updates/latest"
 
 
@@ -1307,6 +1307,36 @@ rm -f "$0"
         sys.exit(0)
 
 
+def set_dark_title_bar(window: tk.Tk | tk.Toplevel):
+    """Enable native Windows 10/11 immersive dark mode title bar."""
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+        window.update_idletasks()
+        hwnds = []
+        try:
+            hwnds.append(int(window.wm_frame(), 16))
+        except Exception:
+            pass
+        try:
+            parent_h = ctypes.windll.user32.GetParent(window.winfo_id())
+            if parent_h:
+                hwnds.append(parent_h)
+        except Exception:
+            pass
+        hwnds.append(window.winfo_id())
+
+        value = ctypes.c_int(1)
+        for h in set(hwnds):
+            if h:
+                # DWMWA_USE_IMMERSIVE_DARK_MODE: 20 for Win 11 & Win 10 (20H1+), 19 for older Win 10
+                if ctypes.windll.dwmapi.DwmSetWindowAttribute(h, 20, ctypes.byref(value), ctypes.sizeof(value)) != 0:
+                    ctypes.windll.dwmapi.DwmSetWindowAttribute(h, 19, ctypes.byref(value), ctypes.sizeof(value))
+    except Exception:
+        pass
+
+
 class UpdateDialog(tk.Toplevel):
     """Modal dialog displaying download progress and applying the update."""
     def __init__(self, parent: "BillScraperApp", info: UpdateInfo):
@@ -1321,6 +1351,7 @@ class UpdateDialog(tk.Toplevel):
         self.resizable(False, False)
         self.transient(parent)
         self.grab_set()
+        set_dark_title_bar(self)
 
         # Center over parent
         w, h = 420, 200
@@ -1740,6 +1771,7 @@ class LicenseGateDialog(tk.Toplevel):
         self.resizable(False, False)
         self.transient(parent)
         self.grab_set()
+        set_dark_title_bar(self)
 
         self.activated = False
         self.license_info: dict | None = None
@@ -2185,13 +2217,15 @@ class AboutDialog(tk.Toplevel):
     """Sleek modal dialog showing application, active license, and developer information."""
     def __init__(self, parent: "BillScraperApp"):
         super().__init__(parent)
+        self.parent = parent
         self.title("About Bill Scrapper")
         self.configure(bg=BG_DARK)
         self.resizable(False, False)
         self.transient(parent)
         self.grab_set()
+        set_dark_title_bar(self)
 
-        w, h = 420, 410
+        w, h = 450, 420
         px = parent.winfo_rootx() + (parent.winfo_width() // 2) - (w // 2)
         py = parent.winfo_rooty() + (parent.winfo_height() // 2) - (h // 2)
         self.geometry(f"{w}x{h}+{max(0, px)}+{max(0, py)}")
@@ -2237,6 +2271,22 @@ class AboutDialog(tk.Toplevel):
             command=self._copy_serial_key,
         )
         self.copy_key_btn.pack(side="right")
+
+        self.change_key_btn = tk.Button(
+            key_row,
+            text="🔑 Change Key",
+            bg=BTN_SEC_BG,
+            fg=TEXT_WHITE,
+            activebackground=BTN_SEC_HOVER,
+            activeforeground=TEXT_WHITE,
+            font=(UI_FONT, 8, "bold"),
+            relief="flat",
+            cursor="hand2",
+            padx=8,
+            pady=2,
+            command=self._change_serial_key,
+        )
+        self.change_key_btn.pack(side="right", padx=(0, 4))
 
         hw_lbl = ttk.Label(
             lic_card,
@@ -2312,6 +2362,15 @@ class AboutDialog(tk.Toplevel):
             self.copy_key_btn.configure(text="✅ Copied!", fg="#4ec9b0")
             self.after(2000, lambda: self.copy_key_btn.configure(text="📋 Copy", fg=TEXT_MAIN) if self.winfo_exists() else None)
 
+    def _change_serial_key(self):
+        parent = self.parent
+        self.destroy()
+        gate = LicenseGateDialog(parent)
+        parent.wait_window(gate)
+        if gate.activated and gate.license_info:
+            parent.active_license = gate.license_info
+            messagebox.showinfo("License Activated", "Serial key updated successfully!", parent=parent)
+
 
 class BillScraperApp(tk.Tk):
     def __init__(self):
@@ -2321,6 +2380,7 @@ class BillScraperApp(tk.Tk):
         self.resizable(True, True)
         self.geometry("640x600")
         self.minsize(580, 520)
+        set_dark_title_bar(self)
 
         self._icon_img = None
         try:
@@ -2472,6 +2532,7 @@ class BillScraperApp(tk.Tk):
             return
 
         self.deiconify()
+        set_dark_title_bar(self)
         self.build_ui()
         self.after(100, self.drain_events)
         threading.Thread(target=self._bg_update_check, daemon=True).start()

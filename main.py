@@ -3023,10 +3023,14 @@ class BillScraperApp(tk.Tk):
         self.after(100, self.drain_events)
 
 
-if __name__ == "__main__":
+def start_app():
     app = BillScraperApp()
     try:
         if getattr(app, "active_license", None) and app.winfo_exists():
             app.mainloop()
     except (tk.TclError, SystemExit):
         pass
+
+
+if __name__ == "__main__":
+    start_app()

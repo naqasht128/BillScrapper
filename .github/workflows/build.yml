@@ -32,27 +32,15 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt pyinstaller nuitka
 
-      - name: Build Windows Executable (Nuitka C++ Native Binary Protection)
+      - name: Compile Proprietary Modules with Nuitka (C++ Binary Protection)
         shell: pwsh
         env:
           PYTHONIOENCODING: "utf-8"
         run: |
-          if ($env:SKIP_NUITKA -eq "1") {
-            Write-Host "[INFO] SKIP_NUITKA=1 detected, falling back to PyInstaller."
-            pyinstaller BillScrapper.spec --clean
-          } else {
-            Write-Host "[INFO] Compiling BillScrapper with Nuitka native C++ compilation..."
-            python -m nuitka `
-              --onefile `
-              --windows-console-mode=disable `
-              --enable-plugin=tk-inter `
-              --include-data-dir=assets=assets `
-              --windows-icon-from-ico=assets/billscrapper.ico `
-              --output-dir=dist `
-              --output-filename=BillScrapper.exe `
-              --assume-yes-for-downloads `
-              main.py
-          }
+          python scripts/compile_nuitka.py
+
+      - name: Build Windows Executable
+        run: pyinstaller BillScrapper.spec --clean
 
       - name: Build Windows Setup Installer (Inno Setup)
         run: |

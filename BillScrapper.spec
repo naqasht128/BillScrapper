@@ -1,12 +1,20 @@
 # -*- mode: python ; coding: utf-8 -*-
+import os
+import glob
+import sys
 
+compiled_binaries = []
+for pyd_path in glob.glob('*.pyd'):
+    compiled_binaries.append((pyd_path, '.'))
+
+entry_script = 'launcher.py' if os.path.exists('launcher.py') else 'main.py'
 
 a = Analysis(
-    ['main.py'],
+    [entry_script],
     pathex=[],
-    binaries=[],
+    binaries=compiled_binaries,
     datas=[('assets', 'assets')],
-    hiddenimports=[],
+    hiddenimports=['openpyxl', 'bs4', 'requests', 'lxml', 'main'],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
@@ -15,8 +23,6 @@ a = Analysis(
     optimize=0,
 )
 pyz = PYZ(a.pure)
-
-import sys
 
 exe_icon = ['assets/billscrapper.ico'] if sys.platform == 'win32' else None
 

@@ -1140,7 +1140,7 @@ LOG_BG = "#1e1e1e"             # Same as IDE code editor canvas
 LOG_FG = "#d4d4d4"             # Clean readable terminal text
 
 # Version & Secure License/Update server endpoint (keeps GitHub repo 100% private)
-APP_VERSION = "1.2.3"
+APP_VERSION = "1.2.4"
 UPDATE_API_URL = f"{LICENSE_API_URL}/api/updates/latest"
 
 
@@ -1229,17 +1229,17 @@ def install_and_restart(new_file_path: str, root_window: tk.Tk):
             try:
                 DETACHED_FLAGS = 0x08000000 | 0x00000200
                 subprocess.Popen(
-                    [new_file_path, "/SILENT", "/CLOSEAPPLICATIONS", "/RESTARTAPPLICATIONS"],
+                    [new_file_path, "/SILENT", "/CLOSEAPPLICATIONS", "/FORCECLOSEAPPLICATIONS", "/RESTARTAPPLICATIONS"],
                     creationflags=DETACHED_FLAGS,
                     close_fds=True,
                 )
             except Exception:
-                subprocess.Popen([new_file_path])
+                subprocess.Popen([new_file_path, "/CLOSEAPPLICATIONS", "/FORCECLOSEAPPLICATIONS"])
             try:
                 root_window.destroy()
             except Exception:
                 pass
-            sys.exit(0)
+            os._exit(0)
 
         # Fallback for standalone portable executable replacement
         bat_path = Path(tempfile.gettempdir()) / f"billscrapper_patch_{pid}.bat"

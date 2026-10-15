@@ -2,7 +2,7 @@
 ; Produces a modern, professional, per-user Windows Setup Wizard
 
 #ifndef AppVersion
-#define AppVersion "1.2.3"
+#define AppVersion "1.2.4"
 #endif
 
 #define AppName "Bill Scrapper"
@@ -28,7 +28,7 @@ Compression=lzma2/ultra64
 SolidCompression=yes
 WizardStyle=modern
 PrivilegesRequired=lowest
-CloseApplications=yes
+CloseApplications=force
 RestartApplications=no
 VersionInfoCompany={#AppPublisher}
 VersionInfoDescription={#AppName} Setup
@@ -53,4 +53,16 @@ Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExeName}"; Tasks: deskto
 
 [Run]
 Filename: "{app}\{#AppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(AppName, '&', '&&')}}"; Flags: nowait postinstall
+
+[Code]
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  ResultCode: Integer;
+begin
+  // Force terminate any running BillScrapper instances so files are never locked
+  Exec('taskkill.exe', '/f /im BillScrapper.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Exec('taskkill.exe', '/f /im BillScrapper.tmp', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Sleep(500);
+  Result := '';
+end;
 

@@ -1140,7 +1140,7 @@ LOG_BG = "#1e1e1e"             # Same as IDE code editor canvas
 LOG_FG = "#d4d4d4"             # Clean readable terminal text
 
 # Version & Secure License/Update server endpoint (keeps GitHub repo 100% private)
-APP_VERSION = "1.2.6"
+APP_VERSION = "1.2.7"
 UPDATE_API_URL = f"{LICENSE_API_URL}/api/updates/latest"
 
 
@@ -1360,6 +1360,21 @@ class UpdateDialog(tk.Toplevel):
         self.transient(parent)
         self.grab_set()
         set_dark_title_bar(self)
+
+        try:
+            if sys.platform == "win32":
+                icon_file = resource_path("assets/billscrapper.ico")
+                if not os.path.exists(icon_file):
+                    icon_file = resource_path("assets/mdiscrapper.ico")
+                if os.path.exists(icon_file):
+                    self.iconbitmap(icon_file)
+            else:
+                png_file = resource_path("assets/billscrapper-icon.png")
+                if os.path.exists(png_file):
+                    img = tk.PhotoImage(file=png_file)
+                    self.iconphoto(False, img)
+        except Exception:
+            pass
 
         # Center over parent
         w, h = 420, 200
@@ -2235,6 +2250,21 @@ class AboutDialog(tk.Toplevel):
         self.grab_set()
         set_dark_title_bar(self)
 
+        try:
+            if sys.platform == "win32":
+                icon_file = resource_path("assets/billscrapper.ico")
+                if not os.path.exists(icon_file):
+                    icon_file = resource_path("assets/mdiscrapper.ico")
+                if os.path.exists(icon_file):
+                    self.iconbitmap(icon_file)
+            else:
+                png_file = resource_path("assets/billscrapper-icon.png")
+                if os.path.exists(png_file):
+                    img = tk.PhotoImage(file=png_file)
+                    self.iconphoto(False, img)
+        except Exception:
+            pass
+
         w, h = 450, 420
         px = parent.winfo_rootx() + (parent.winfo_width() // 2) - (w // 2)
         py = parent.winfo_rooty() + (parent.winfo_height() // 2) - (h // 2)
@@ -2400,11 +2430,10 @@ class BillScraperApp(tk.Tk):
                     icon_file = resource_path("assets/mdiscrapper.ico")
                 if os.path.exists(icon_file):
                     self.iconbitmap(icon_file)
-            else:
-                png_file = resource_path("assets/billscrapper-icon.png")
-                if os.path.exists(png_file):
-                    self._icon_img = tk.PhotoImage(file=png_file)
-                    self.iconphoto(True, self._icon_img)
+            png_file = resource_path("assets/billscrapper-icon.png")
+            if os.path.exists(png_file):
+                self._icon_img = tk.PhotoImage(file=png_file)
+                self.iconphoto(True, self._icon_img)
         except Exception:
             pass
 

@@ -43,8 +43,8 @@ LICENSE_API_URL = os.environ.get("LICENSE_API_URL", "https://bill-scrapper.verce
 
 
 def resource_path(relative_path):
-    """Resolve bundled resources in both source runs and PyInstaller builds."""
-    bundle_root = getattr(sys, "_MEIPASS", Path(__file__).resolve().parent)
+    """Resolve bundled resources in source runs, PyInstaller, and Nuitka onefile builds."""
+    bundle_root = os.environ.get("NUITKA_ONEFILE_DIRECTORY") or getattr(sys, "_MEIPASS", None) or Path(__file__).resolve().parent
     return str(Path(bundle_root) / relative_path)
 
 # Fields that are intentionally never requested/exported.
@@ -1140,7 +1140,7 @@ LOG_BG = "#1e1e1e"             # Same as IDE code editor canvas
 LOG_FG = "#d4d4d4"             # Clean readable terminal text
 
 # Version & Secure License/Update server endpoint (keeps GitHub repo 100% private)
-APP_VERSION = "1.2.9"
+APP_VERSION = "1.3.0"
 UPDATE_API_URL = f"{LICENSE_API_URL}/api/updates/latest"
 
 

@@ -1140,7 +1140,7 @@ LOG_BG = "#1e1e1e"             # Same as IDE code editor canvas
 LOG_FG = "#d4d4d4"             # Clean readable terminal text
 
 # Version & Secure License/Update server endpoint (keeps GitHub repo 100% private)
-APP_VERSION = "1.2.7"
+APP_VERSION = "1.2.8"
 UPDATE_API_URL = f"{LICENSE_API_URL}/api/updates/latest"
 
 
@@ -1232,17 +1232,37 @@ def install_and_restart(new_file_path: str, root_window: tk.Tk):
             except Exception:
                 pass
 
+        # Strip all PyInstaller, Python, and Tk environment variables to prevent child process conflicts
+        clean_env = os.environ.copy()
+        keys_to_remove = [
+            k for k in clean_env
+            if k.startswith('_PYI')
+            or k.startswith('_MEI')
+            or k.startswith('PYTHON')
+            or k.startswith('TCL')
+            or k.startswith('TK')
+        ]
+        for k in keys_to_remove:
+            clean_env.pop(k, None)
+
+        if hasattr(sys, '_MEIPASS'):
+            meipass = sys._MEIPASS.lower()
+            path_dirs = clean_env.get('PATH', '').split(os.pathsep)
+            path_dirs = [p for p in path_dirs if p.lower().rstrip(r'\/') != meipass and '_mei' not in p.lower()]
+            clean_env['PATH'] = os.pathsep.join(path_dirs)
+
         if is_setup_installer:
             # Clean Inno Setup silent install: closes app, updates files, and restarts
             try:
                 DETACHED_FLAGS = 0x08000000 | 0x00000200
                 subprocess.Popen(
-                    [new_file_path, "/SILENT", "/CLOSEAPPLICATIONS", "/FORCECLOSEAPPLICATIONS", "/RESTARTAPPLICATIONS"],
+                    [new_file_path, "/SILENT", "/CLOSEAPPLICATIONS", "/FORCECLOSEAPPLICATIONS", "/AUTOUPDATE=1"],
                     creationflags=DETACHED_FLAGS,
                     close_fds=True,
+                    env=clean_env,
                 )
             except Exception:
-                subprocess.Popen([new_file_path, "/CLOSEAPPLICATIONS", "/FORCECLOSEAPPLICATIONS"])
+                subprocess.Popen([new_file_path, "/CLOSEAPPLICATIONS", "/FORCECLOSEAPPLICATIONS", "/AUTOUPDATE=1"], env=clean_env)
             try:
                 root_window.destroy()
             except Exception:
@@ -1281,6 +1301,7 @@ del %NEW_EXE% >nul 2>&1
             ["cmd.exe", "/c", str(bat_path)],
             creationflags=DETACHED_FLAGS,
             close_fds=True,
+            env=clean_env,
         )
         try:
             root_window.destroy()

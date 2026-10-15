@@ -2,7 +2,7 @@
 ; Produces a modern, professional, per-user Windows Setup Wizard
 
 #ifndef AppVersion
-#define AppVersion "1.2.7"
+#define AppVersion "1.2.8"
 #endif
 
 #define AppName "Bill Scrapper"
@@ -52,17 +52,31 @@ Name: "{autoprograms}\{#AppName}"; Filename: "{app}\{#AppExeName}"
 Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExeName}"; Tasks: desktopicon
 
 [Run]
-Filename: "{app}\{#AppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(AppName, '&', '&&')}}"; Flags: nowait postinstall
+Filename: "{app}\{#AppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(AppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent shellexec; WorkingDir: "{app}"
+Filename: "{app}\{#AppExeName}"; Flags: nowait shellexec; Check: IsAutoUpdate; WorkingDir: "{app}"
 
 [Code]
-function PrepareToInstall(var NeedsRestart: Boolean): String;
+function SetEnvironmentVariable(lpName, lpValue: string): BOOL;
+external 'SetEnvironmentVariableW@kernel32.dll stdcall';
+
+function InitializeSetup(): Boolean;
 var
   ResultCode: Integer;
 begin
-  // Force terminate any running BillScrapper instances so files are never locked
-  Exec('taskkill.exe', '/f /im BillScrapper.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-  Exec('taskkill.exe', '/f /im BillScrapper.tmp', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-  Sleep(500);
-  Result := '';
+  // Clear any inherited PyInstaller variables so the relaunched app unpacks cleanly
+  SetEnvironmentVariable('_MEIPASS2', '');
+  SetEnvironmentVariable('_MEIPASS', '');
+  SetEnvironmentVariable('PYTHONHOME', '');
+  SetEnvironmentVariable('PYTHONPATH', '');
+
+  // Terminate any running or lingering instances of BillScrapper.exe
+  Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM BillScrapper.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Sleep(400);
+  Result := True;
+end;
+
+function IsAutoUpdate: Boolean;
+begin
+  Result := ExpandConstant('{param:AUTOUPDATE|0}') = '1';
 end;
 

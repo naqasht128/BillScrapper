@@ -44,3 +44,7 @@ Thumbs.db
 ~$*.xlsx
 *.swp
 *~
+
+# Admin Key Generator local build
+generate_key.exe
+generate_key.spec

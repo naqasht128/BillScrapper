@@ -23,6 +23,34 @@ import requests
 DEFAULT_API_URL = os.environ.get("LICENSE_API_URL", "https://bill-scrapper.vercel.app").rstrip("/")
 DEFAULT_ADMIN_SECRET = os.environ.get("ADMIN_SECRET", "")
 
+
+def get_admin_config_path() -> Path:
+    """Return local path to admin_config.json in AppData."""
+    base = Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming"))
+    app_dir = base / "BillScrapper"
+    app_dir.mkdir(parents=True, exist_ok=True)
+    return app_dir / "admin_config.json"
+
+
+def load_admin_config() -> dict:
+    """Load cached server settings from disk."""
+    p = get_admin_config_path()
+    if p.is_file():
+        try:
+            return json.loads(p.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    return {}
+
+
+def save_admin_config(data: dict):
+    """Save server settings to disk."""
+    p = get_admin_config_path()
+    try:
+        p.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+
 # VS Code Dark+ Palette
 BG_DARK = "#1e1e1e"
 CARD_BG = "#252526"
@@ -76,6 +104,19 @@ class KeyGeneratorGUI(tk.Tk):
         self.geometry("560x650")
         self.minsize(520, 600)
 
+        try:
+            if sys.platform == "win32":
+                bundle_root = getattr(sys, "_MEIPASS", Path(__file__).resolve().parent)
+                icon_path = Path(bundle_root) / "assets" / "billscrapper.ico"
+                if icon_path.exists():
+                    self.iconbitmap(str(icon_path))
+        except Exception:
+            pass
+
+        cfg = load_admin_config()
+        self.cached_api = cfg.get("api_url") or DEFAULT_API_URL
+        self.cached_secret = cfg.get("admin_secret") or DEFAULT_ADMIN_SECRET
+
         self._init_styles()
         self._build_ui()
 
@@ -112,7 +153,7 @@ class KeyGeneratorGUI(tk.Tk):
 
         # API URL
         ttk.Label(config_card, text="License Server URL:", style="CardText.TLabel").pack(anchor="w")
-        self.api_url_var = tk.StringVar(value=DEFAULT_API_URL)
+        self.api_url_var = tk.StringVar(value=self.cached_api)
         api_entry = tk.Entry(
             config_card,
             textvariable=self.api_url_var,
@@ -129,7 +170,7 @@ class KeyGeneratorGUI(tk.Tk):
 
         # Admin Secret
         ttk.Label(config_card, text="Admin Secret (x-admin-secret):", style="CardText.TLabel").pack(anchor="w")
-        self.secret_var = tk.StringVar(value=DEFAULT_ADMIN_SECRET)
+        self.secret_var = tk.StringVar(value=self.cached_secret)
         secret_box = ttk.Frame(config_card, style="Card.TFrame")
         secret_box.pack(fill="x", pady=(4, 0))
 
@@ -266,6 +307,7 @@ class KeyGeneratorGUI(tk.Tk):
 
         try:
             res = generate_key_api(api_url, secret, plan)
+            save_admin_config({"api_url": api_url, "admin_secret": secret})
             key = res["serial_key"]
             self.key_var.set(key)
 

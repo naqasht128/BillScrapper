@@ -2,7 +2,7 @@
 ; Produces a modern, professional, per-user Windows Setup Wizard
 
 #ifndef AppVersion
-#define AppVersion "1.2.4"
+#define AppVersion "1.2.5"
 #endif
 
 #define AppName "Bill Scrapper"

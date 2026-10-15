@@ -1140,7 +1140,7 @@ LOG_BG = "#1e1e1e"             # Same as IDE code editor canvas
 LOG_FG = "#d4d4d4"             # Clean readable terminal text
 
 # Version & Secure License/Update server endpoint (keeps GitHub repo 100% private)
-APP_VERSION = "1.2.4"
+APP_VERSION = "1.2.5"
 UPDATE_API_URL = f"{LICENSE_API_URL}/api/updates/latest"
 
 
@@ -2603,7 +2603,7 @@ class BillScraperApp(tk.Tk):
         )
         self.check_update_btn.pack(side="left")
 
-        sub_lbl = ttk.Label(header_frame, text="Automated Bill Scraping & Fixed Charges Audit", style="Sub.TLabel")
+        sub_lbl = ttk.Label(header_frame, text="Automated Bill Scraping", style="Sub.TLabel")
         sub_lbl.pack(anchor="w", pady=(2, 0))
 
         # Notification banner for available updates (hidden by default)

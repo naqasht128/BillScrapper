@@ -108,6 +108,17 @@ def update_installer_version(new_version: str):
         print(f"  ✔ Updated installer.iss: AppVersion = \"{new_version}\"")
 
 
+def generate_release_notes_file(new_version: str, msg: str):
+    """Write clean RELEASE_NOTES.md so GitHub Releases does not insert compare links."""
+    rn_file = ROOT_DIR / "RELEASE_NOTES.md"
+    if msg and msg != f"Release v{new_version}":
+        content = f"• {msg}"
+    else:
+        content = f"• Release v{new_version}: Performance improvements and stability updates"
+    rn_file.write_text(content, encoding="utf-8")
+    print("  ✔ Generated clean RELEASE_NOTES.md")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Bill Scrapper - Automated Release & Update Publisher")
     parser.add_argument("version", nargs="?", help="New version number (e.g. 1.2.1)")
@@ -158,6 +169,7 @@ def main():
     print(f"\n[Step 2/5] Updating version in main.py and installer.iss to {target_ver}...")
     update_main_version(target_ver)
     update_installer_version(target_ver)
+    generate_release_notes_file(target_ver, msg)
 
     # 3. Git Stage & Commit
     print("\n[Step 3/5] Staging code changes & committing...")

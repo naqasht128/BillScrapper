@@ -133,6 +133,6 @@ jobs:
             release-assets/BillScrapper.exe
             release-assets/BillScrapper
           draft: false
-          prerelease: false
-          generate_release_notes: true
+          body_path: RELEASE_NOTES.md
+          generate_release_notes: false
 

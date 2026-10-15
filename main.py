@@ -1140,7 +1140,7 @@ LOG_BG = "#1e1e1e"             # Same as IDE code editor canvas
 LOG_FG = "#d4d4d4"             # Clean readable terminal text
 
 # Version & Secure License/Update server endpoint (keeps GitHub repo 100% private)
-APP_VERSION = "1.2.8"
+APP_VERSION = "1.2.9"
 UPDATE_API_URL = f"{LICENSE_API_URL}/api/updates/latest"
 
 
@@ -1375,12 +1375,11 @@ class UpdateDialog(tk.Toplevel):
         self.cancelled = False
         self.temp_file: str | None = None
 
+        self.withdraw()
         self.title("Updating Bill Scrapper")
         self.configure(bg=BG_DARK)
         self.resizable(False, False)
         self.transient(parent)
-        self.grab_set()
-        set_dark_title_bar(self)
 
         try:
             if sys.platform == "win32":
@@ -1439,6 +1438,12 @@ class UpdateDialog(tk.Toplevel):
 
         self.queue = queue.Queue()
         self.protocol("WM_DELETE_WINDOW", self.cancel)
+
+        set_dark_title_bar(self)
+        self.update_idletasks()
+        self.deiconify()
+        self.grab_set()
+
         self._poll_queue()
         threading.Thread(target=self._download_worker, daemon=True).start()
 
@@ -1533,9 +1538,10 @@ class UpdateDialog(tk.Toplevel):
         self.destroy()
 
 
-# ====================================================================
-# LICENSING, HARDWARE DEVICE FINGERPRINTING & LOCAL CONFIG
-# ====================================================================
+# Global hardware device ID cache to make all subsequent queries instantaneous (0.00ms)
+_CACHED_DEVICE_ID: str | None = None
+_CACHED_CANDIDATE_IDS: list[str] | None = None
+
 
 def get_device_id() -> str:
     """
@@ -1546,6 +1552,16 @@ def get_device_id() -> str:
     or Darwin/Linux machine UUID.
     Guaranteed never to crash or flash console windows.
     """
+    global _CACHED_DEVICE_ID
+    if _CACHED_DEVICE_ID:
+        return _CACHED_DEVICE_ID
+
+    device_id = _compute_device_id()
+    _CACHED_DEVICE_ID = device_id
+    return device_id
+
+
+def _compute_device_id() -> str:
     if sys.platform == "win32":
         # 1. Windows Registry MachineGuid (both 64-bit and 32-bit registry views)
         for flag in [getattr(winreg, 'KEY_WOW64_64KEY', 0), getattr(winreg, 'KEY_WOW64_32KEY', 0), 0]:
@@ -1660,6 +1676,10 @@ def get_legacy_device_id() -> str:
 
 def get_candidate_device_ids() -> list[str]:
     """Return all valid device IDs for this machine: [primary_id, legacy_hash]."""
+    global _CACHED_CANDIDATE_IDS
+    if _CACHED_CANDIDATE_IDS:
+        return _CACHED_CANDIDATE_IDS
+
     primary = get_device_id()
     candidates = [primary]
     try:
@@ -1668,6 +1688,8 @@ def get_candidate_device_ids() -> list[str]:
             candidates.append(legacy)
     except Exception:
         pass
+
+    _CACHED_CANDIDATE_IDS = candidates
     return candidates
 
 
@@ -1811,13 +1833,12 @@ class LicenseGateDialog(tk.Toplevel):
 
     def __init__(self, parent: "BillScraperApp", initial_error: str = ""):
         super().__init__(parent)
+        self.withdraw()
         self.parent = parent
         self.title("Bill Scrapper — License Activation")
         self.configure(bg=BG_DARK)
         self.resizable(False, False)
         self.transient(parent)
-        self.grab_set()
-        set_dark_title_bar(self)
 
         self.activated = False
         self.license_info: dict | None = None
@@ -1845,6 +1866,11 @@ class LicenseGateDialog(tk.Toplevel):
             pass
 
         self._build_ui(initial_error)
+        set_dark_title_bar(self)
+        self.update_idletasks()
+        self.deiconify()
+        self.grab_set()
+
         self._poll_queue()
 
     def _poll_queue(self):
@@ -2263,13 +2289,12 @@ class AboutDialog(tk.Toplevel):
     """Sleek modal dialog showing application, active license, and developer information."""
     def __init__(self, parent: "BillScraperApp"):
         super().__init__(parent)
+        self.withdraw()  # Keep hidden during configuration to prevent visual blink
         self.parent = parent
         self.title("About Bill Scrapper")
         self.configure(bg=BG_DARK)
         self.resizable(False, False)
         self.transient(parent)
-        self.grab_set()
-        set_dark_title_bar(self)
 
         try:
             if sys.platform == "win32":
@@ -2414,6 +2439,11 @@ class AboutDialog(tk.Toplevel):
         close_btn.pack(side="right")
         close_btn.focus_set()
 
+        set_dark_title_bar(self)
+        self.update_idletasks()
+        self.deiconify()
+        self.grab_set()
+
     def _copy_serial_key(self):
         lic = getattr(self.master, "active_license", None) or load_local_license()
         key = lic.get("serial_key", "")
@@ -2436,12 +2466,12 @@ class AboutDialog(tk.Toplevel):
 class BillScraperApp(tk.Tk):
     def __init__(self):
         super().__init__()
+        self.withdraw()  # Keep hidden immediately so no blank or unrendered window flashes
         self.title("Bill Scrapper")
         self.configure(bg=BG_DARK)
         self.resizable(True, True)
         self.geometry("640x600")
         self.minsize(580, 520)
-        set_dark_title_bar(self)
 
         self._icon_img = None
         try:
@@ -2457,24 +2487,6 @@ class BillScraperApp(tk.Tk):
                 self.iconphoto(True, self._icon_img)
         except Exception:
             pass
-
-        # Windows 11 natively supports DWM immersive dark mode for Win32 apps.
-        # On Windows 10, DWMWA_USE_IMMERSIVE_DARK_MODE causes a white title bar with
-        # invisible caption buttons and black box text artifacts, so we restrict it to build >= 22000.
-        if sys.platform == "win32":
-            try:
-                if sys.getwindowsversion().build >= 22000:
-                    import ctypes
-                    self.update()
-                    hwnd = ctypes.windll.user32.GetParent(self.winfo_id()) or self.winfo_id()
-                    val = ctypes.c_int(2)
-                    ctypes.windll.dwmapi.DwmSetWindowAttribute(
-                        hwnd, 20, ctypes.byref(val), ctypes.sizeof(val)
-                    )
-                    SWP_FLAGS = 0x0001 | 0x0002 | 0x0004 | 0x0020
-                    ctypes.windll.user32.SetWindowPos(hwnd, 0, 0, 0, 0, 0, SWP_FLAGS)
-            except Exception:
-                pass
 
         self.style = ttk.Style(self)
         try:
@@ -2581,7 +2593,6 @@ class BillScraperApp(tk.Tk):
         self.files_frame: ttk.LabelFrame | None = None
 
         self.active_license: dict | None = None
-        self.withdraw()
 
         if not self.ensure_licensed():
             try:
@@ -2591,9 +2602,10 @@ class BillScraperApp(tk.Tk):
                 pass
             return
 
-        self.deiconify()
-        set_dark_title_bar(self)
         self.build_ui()
+        set_dark_title_bar(self)
+        self.update_idletasks()
+        self.deiconify()
         self.after(100, self.drain_events)
         threading.Thread(target=self._bg_update_check, daemon=True).start()
 
@@ -2604,10 +2616,28 @@ class BillScraperApp(tk.Tk):
         initial_error = ""
 
         if local_lic and local_lic.get("serial_key"):
-            key = local_lic["serial_key"]
+            # Check local expiration timestamp for instant, latency-free startup (<50ms)
+            exp_str = local_lic.get("expires_at")
+            is_locally_valid = False
+            if exp_str:
+                try:
+                    clean_ts = str(exp_str).replace("Z", "+00:00")
+                    exp_dt = datetime.fromisoformat(clean_ts)
+                    if exp_dt > datetime.now(timezone.utc):
+                        is_locally_valid = True
+                except Exception:
+                    pass
+
+            if is_locally_valid:
+                # Fast path: instant UI display, verify remotely in background thread
+                self.active_license = local_lic
+                threading.Thread(target=self._bg_verify_license, daemon=True).start()
+                return True
+
+            # If local cache is expired or unverified, try remote verification directly
             try:
                 candidate_ids = get_candidate_device_ids()
-                res = verify_license_remote(key, device_id, candidate_ids=candidate_ids)
+                res = verify_license_remote(local_lic["serial_key"], device_id, candidate_ids=candidate_ids)
                 if res.get("valid"):
                     local_lic.update(res)
                     save_local_license(local_lic)
@@ -2616,17 +2646,6 @@ class BillScraperApp(tk.Tk):
                 else:
                     initial_error = res.get("message") or "License expired or invalid."
             except Exception as e:
-                # If network is offline, check if local expires_at is present and not expired
-                exp_str = local_lic.get("expires_at")
-                if exp_str:
-                    try:
-                        clean_ts = str(exp_str).replace("Z", "+00:00")
-                        exp_dt = datetime.fromisoformat(clean_ts)
-                        if exp_dt > datetime.now(timezone.utc):
-                            self.active_license = local_lic
-                            return True
-                    except Exception:
-                        pass
                 initial_error = f"License verification error: {e}"
 
         # If we reach here, license is missing, expired, or invalid
@@ -2638,6 +2657,36 @@ class BillScraperApp(tk.Tk):
             return True
 
         return False
+
+    def _bg_verify_license(self):
+        """Asynchronously validates the active license in the background without blocking the UI."""
+        try:
+            local_lic = load_local_license()
+            if not local_lic or not local_lic.get("serial_key"):
+                return
+            key = local_lic["serial_key"]
+            device_id = get_device_id()
+            candidate_ids = get_candidate_device_ids()
+            res = verify_license_remote(key, device_id, candidate_ids=candidate_ids)
+            if res.get("valid"):
+                local_lic.update(res)
+                save_local_license(local_lic)
+                self.active_license = local_lic
+            else:
+                msg = res.get("message") or "Your license is no longer valid or has expired."
+                self.after(0, lambda: self._on_license_revoked(msg))
+        except Exception:
+            # Network issue / offline mode: tolerate silently while local expires_at is unexpired
+            pass
+
+    def _on_license_revoked(self, reason: str):
+        messagebox.showerror("License Expired", reason, parent=self)
+        gate = LicenseGateDialog(self, initial_error=reason)
+        self.wait_window(gate)
+        if gate.activated and gate.license_info:
+            self.active_license = gate.license_info
+        else:
+            self.destroy()
 
     def build_ui(self):
         root = ttk.Frame(self, style="Root.TFrame", padding=(18, 14, 18, 14))

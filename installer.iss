@@ -2,7 +2,7 @@
 ; Produces a modern, professional, per-user Windows Setup Wizard
 
 #ifndef AppVersion
-#define AppVersion "1.2.8"
+#define AppVersion "1.2.9"
 #endif
 
 #define AppName "Bill Scrapper"
@@ -53,7 +53,7 @@ Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExeName}"; Tasks: deskto
 
 [Run]
 Filename: "{app}\{#AppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(AppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent shellexec; WorkingDir: "{app}"
-Filename: "{app}\{#AppExeName}"; Flags: nowait shellexec; Check: IsAutoUpdate; WorkingDir: "{app}"
+Filename: "{app}\{#AppExeName}"; Flags: nowait shellexec; Check: ShouldLaunchSilent; WorkingDir: "{app}"
 
 [Code]
 function SetEnvironmentVariable(lpName, lpValue: string): BOOL;
@@ -75,8 +75,8 @@ begin
   Result := True;
 end;
 
-function IsAutoUpdate: Boolean;
+function ShouldLaunchSilent: Boolean;
 begin
-  Result := ExpandConstant('{param:AUTOUPDATE|0}') = '1';
+  Result := WizardSilent or (ExpandConstant('{param:AUTOUPDATE|0}') = '1');
 end;
 

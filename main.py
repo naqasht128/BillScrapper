@@ -92,12 +92,17 @@ def should_be_numeric(key):
     """Identify bill fields that should be written as numbers, not text."""
     normalized = normalized_key(key).lower()
     if normalized in {
-        "payment", "grand_total", "adjustments", "san_load",
+        "payment", "total payment", "total_payment", "total units", "total_units", "grand_total", "adjustments", "san_load",
         "current bill", "current_bill", "total fpa", "total_fpa",
         "prv_cum_mdi_1", "prv_cum_mdi_2", "cum_mdi_1", "cum_mdi_2",
     }:
         return True
-    return bool(re.fullmatch(r"(?:kwh|kvarh|mdi)_(?:present|read|mf|units)(?:_\d+)?", normalized))
+    if re.fullmatch(r"(?:kwh|kvarh|mdi)_(?:present|read|mf|units)(?:_\d+)?", normalized):
+        return True
+    fkey = field_key(key)
+    if re.fullmatch(r"(?:units|bill_rs|payment_rs)_\d+", fkey):
+        return True
+    return False
 
 
 def clean(value):
@@ -106,6 +111,109 @@ def clean(value):
 
 def field_key(value):
     return re.sub(r"[^a-zA-Z0-9]+", "_", clean(value).lower()).strip("_") or "field"
+
+
+def parse_num(val):
+    if val is None:
+        return None
+    cleaned = re.sub(r"[^\d.]", "", str(val))
+    try:
+        return float(cleaned) if cleaned else None
+    except ValueError:
+        return None
+
+
+def compute_protected_status(tariff, curr_units, hist_units):
+    """Determine if a consumer is Protected or Non-Protected:
+    If consumer's tariff is A-1A(01) and he has not consumed above 200 units in last 6 months
+    (current month + 5 months from history), put 'Protected', otherwise put 'Non-Protected'.
+    For any tariff other than A-1A(01), it remains blank."""
+    if not tariff:
+        return ""
+    clean_tariff = re.sub(r"\s+", "", str(tariff)).upper()
+    if clean_tariff != "A-1A(01)":
+        return ""
+    if curr_units is not None and curr_units > 200:
+        return "Non-Protected"
+    for u in hist_units:
+        if u is not None and u > 200:
+            return "Non-Protected"
+    return "Protected"
+
+
+def compute_total_payment(record):
+    """Sum of all payments which are already fetched in excel."""
+    rem = str(record.get("Remarks") or record.get("scrape_status", "")).strip().lower()
+    if rem in ("bill not found", "error"):
+        return ""
+    total = 0.0
+    has_pay = False
+    for k, val in record.items():
+        if k.startswith("_"):
+            continue
+        if k.lower() == "payment" or re.match(r"^payment\s*(?:\(rs\.\))?_\d+$", k, re.I):
+            p = parse_num(val)
+            if p is not None:
+                total += p
+                has_pay = True
+    if not has_pay:
+        return 0
+    return int(total) if total.is_integer() else round(total, 2)
+
+
+def compute_total_units(record):
+    """Sum of all units consumed fetched in excel (current month kWh units + history Units)."""
+    rem = str(record.get("Remarks") or record.get("scrape_status", "")).strip().lower()
+    if rem in ("bill not found", "error"):
+        return ""
+    total = 0.0
+    has_units = False
+
+    # 1. Current month units (kwh_units_1 .. 4, or kwh_units)
+    curr_sum = 0.0
+    has_curr = False
+    for i in range(1, 5):
+        val = parse_num(record.get(f"kwh_units_{i}"))
+        if val is not None:
+            curr_sum += val
+            has_curr = True
+    if not has_curr and record.get("kwh_units") is not None:
+        val = parse_num(record.get("kwh_units"))
+        if val is not None:
+            curr_sum += val
+            has_curr = True
+
+    if has_curr:
+        total += curr_sum
+        has_units = True
+
+    # 2. Historical units (Units_1 .. Units_12)
+    for k, val in record.items():
+        if k.startswith("_"):
+            continue
+        if re.match(r"^units?_\d+$", k, re.I):
+            u = parse_num(val)
+            if u is not None:
+                total += u
+                has_units = True
+
+    if not has_units:
+        return 0
+    return int(total) if total.is_integer() else round(total, 2)
+
+
+def extract_meter_type_and_no(raw_meter):
+    """Extract meter type prefix (e.g. S-P, 3-P) from meter number."""
+    if not raw_meter:
+        return "", ""
+    s = clean(raw_meter)
+    m = re.match(r"^([A-Za-z0-9]+(?:[-/][A-Za-z0-9]+)?)\s+(\S.*)$", s)
+    if m:
+        prefix = m.group(1).strip()
+        if re.search(r"[A-Za-z\-]", prefix):
+            meter_no = m.group(2).strip()
+            return prefix, meter_no
+    return "", s
 
 
 def normalized_key(value):
@@ -145,6 +253,18 @@ def normalized_key(value):
         "mdi_units": "mdi_units_1",
         "scrape_status": "Remarks",
         "remarks": "Remarks",
+        "bno": "BNo",
+        "batch_no": "BNo",
+        "sdiv": "SDiv",
+        "s_div": "SDiv",
+        "meter_type": "Meter Type",
+        "metertype": "Meter Type",
+        "total_payment": "Total Payment",
+        "total payment": "Total Payment",
+        "total_units": "Total Units",
+        "total units": "Total Units",
+        "protected_non_protected": "Protected/Non-Protected",
+        "protected/non-protected": "Protected/Non-Protected",
     }
     if key in renamed:
         return renamed[key]
@@ -152,6 +272,23 @@ def normalized_key(value):
         return "export_mdi"
     if key == "table_3_2402_mdi_1":
         return "import_mdi"
+    m = re.match(r"^(month|status|units?|bill(?:_rs)?|payment(?:_rs)?)_?(\d+)$", key)
+    if m:
+        t, num = m.group(1), m.group(2)
+        if t == "month":
+            return f"Month_{num}"
+        if t == "status":
+            return f"Status_{num}"
+        if t in ("units", "unit"):
+            return f"Units_{num}"
+        if t.startswith("bill"):
+            return f"Bill (Rs.)_{num}"
+        if t.startswith("payment"):
+            return f"Payment (Rs.)_{num}"
+    m2 = re.match(r"^(bill|payment)_(\d+)_rs$", key)
+    if m2:
+        t, num = m2.group(1), m2.group(2)
+        return f"{t.capitalize()} (Rs.)_{num}"
     key = re.sub(r"^table_\d+_", "", key)
     return re.sub(r"^\d+(?:_\d+)*_", "", key)
 
@@ -168,6 +305,8 @@ def is_preserved_meter_key(key):
         or k_lower.startswith("prv_cum_mdi_")
         or k_lower.startswith("cum_mdi_")
         or k_lower == "status"
+        or k_lower in {"bno", "sdiv", "meter type", "meter_type", "protected/non-protected", "protected_non_protected", "total payment", "total_payment", "total units", "total_units"}
+        or bool(re.match(r"^(?:month|status|units|bill|payment)(?:_|\s*)\d+", k_lower))
         or k_lower.startswith("in_bill_fix_charges")
         or k_lower in {
             "diff_cum_mdi1", "diff_cum_mdi2",
@@ -251,6 +390,22 @@ GENERAL_LABELS = {
     "bill month": "bill_month",
     "due date": "due_date",
     "transformer": "transformer",
+    "tariff category": "tariff_cat",
+    "curr mdi": "curr_mdi",
+    "sub division": "sub_division",
+}
+
+BILL_HEADING_KEYWORDS = {
+    "reference no", "consumer id", "name address", "name and address", "transformer",
+    "feeder", "sub division", "category", "status", "tariff category", "san load",
+    "san load kw", "curr mdi", "tariff", "meter no", "meter number", "meter", "mf",
+    "previous reading", "present reading", "units", "unit", "bill month", "due date",
+    "total electricity charges", "subsidies", "net electricity charges", "taxes",
+    "current bill", "current bill amount", "total fpa", "total f p a", "total fuel price",
+    "arrears", "installment", "adjustment", "adjustments", "grand total",
+    "amount paid", "paid amount", "payment", "payment date", "ntn no",
+    "bill charges breakdown", "meter info", "meter information", "bill history",
+    "payment history", "billing payment history", "month", "bill",
 }
 
 
@@ -262,12 +417,13 @@ def canonical_label(value):
 def order_output_headers(headers):
     """Keep tariff/san-load stable and keep meter readings under fixed names."""
     first = [
-        "AC No.", "tariff", "san_load", "status", "Current Bill", "Total FPA", "adjustments", "grand_total",
-        "payment", "payment_date",
+        "AC No.", "BNo", "SDiv", "tariff", "Protected/Non-Protected", "san_load", "status", "Current Bill", "Total FPA", "adjustments", "grand_total",
+        "payment", "payment_date", "Total Payment", "Total Units",
         "ntn_no", "bill_month", "name_address", "due_date",
     ]
     ordered = [name for name in first if name in headers]
     meter_order = [
+        "Meter Type",
         *(f"kwh_meter_{i}" for i in range(1, 5)),
         *(f"kwh_present_{i}" for i in range(1, 5)),
         *(f"kwh_mf_{i}" for i in range(1, 5)),
@@ -286,6 +442,16 @@ def order_output_headers(headers):
         "In_Bill_Fix_Charges (Estimated)",
     ]
     ordered += [name for name in meter_order if name in headers and name not in ordered]
+    history_order = []
+    for i in range(1, 13):
+        history_order.extend([
+            f"Month_{i}",
+            f"Status_{i}",
+            f"Units_{i}",
+            f"Bill (Rs.)_{i}",
+            f"Payment (Rs.)_{i}",
+        ])
+    ordered += [name for name in history_order if name in headers and name not in ordered]
     ordered += [name for name in headers if name not in ordered and name not in {"feeder", "Remarks", "scrape_status"}]
     if "feeder" in headers:
         ordered.append("feeder")
@@ -593,14 +759,19 @@ def load_spreadsheet(path: Path):
 
 
 class PITCBillScraper:
-    def __init__(self, delay=2.0, timeout=90):
+    def __init__(self, delay=2.0, timeout=90, history_mode=None):
         self.delay = delay
         self.timeout = timeout
+        self.history_mode = history_mode
 
     @staticmethod
     def put(output, name, value):
         value = clean(value)
         if not value or is_dropped(name):
+            return
+        # Never accept a heading text as a data value
+        norm_val = re.sub(r"[^a-z0-9]+", " ", value.lower()).strip()
+        if norm_val in BILL_HEADING_KEYWORDS or clean(value).upper() == clean(name).upper():
             return
         key = canonical_label(name)
 
@@ -637,6 +808,23 @@ class PITCBillScraper:
                 output[key] = value
 
     @staticmethod
+    def put_grid_col_cells(output, soup):
+        """Read 1-to-1 label-row and val-space pairs inside .grid-col-cell."""
+        for cell in soup.select(".grid-col-cell"):
+            label_rows = cell.select(".label-row")
+            val_spaces = cell.select(".val-space")
+            for lr, vs in zip(label_rows, val_spaces):
+                en_lbl = lr.select_one(".en-lbl")
+                lbl_text = clean(en_lbl.get_text(" ")) if en_lbl else clean(lr.get_text(" "))
+                val_text = clean(" | ".join(text_lines(vs)))
+                canon = canonical_label(lbl_text)
+                if val_text:
+                    PITCBillScraper.put(output, lbl_text, val_text)
+                else:
+                    if canon not in output:
+                        output[canon] = ""
+
+    @staticmethod
     def put_general_pairs(output, soup):
         """Read label/value pairs from both MDI and ordinary bill layouts."""
         known = set(GENERAL_LABELS)
@@ -646,10 +834,19 @@ class PITCBillScraper:
                 label = cells[0].lower().rstrip(":")
                 if label in known:
                     PITCBillScraper.put(output, cells[0], cells[-1])
-        for node in soup.select(".grid-col-cell, .charges-bd-row, .right-section-cell, .ibn-bill-messages__cell"):
-            bits = [clean(x) for x in node.stripped_strings if clean(x)]
-            if len(bits) >= 2 and bits[0].lower().rstrip(":") in known:
-                PITCBillScraper.put(output, bits[0], bits[-1])
+        for node in soup.select(".charges-bd-row, .right-section-cell"):
+            lbl_el = node.select_one(".right-panel-en, .charges-bd-en, .charges-bd-label")
+            val_el = node.select_one(".right-main-val, .charges-bd-val")
+            if lbl_el and val_el:
+                lbl = clean(lbl_el.get_text(" ")).lower().rstrip(":")
+                lbl = re.sub(r"^[^a-z0-9]+", "", lbl).strip()
+                val = clean(val_el.get_text(" "))
+                if lbl in known:
+                    PITCBillScraper.put(output, lbl, val)
+            else:
+                bits = [clean(x) for x in node.stripped_strings if clean(x)]
+                if len(bits) >= 2 and bits[0].lower().rstrip(":") in known:
+                    PITCBillScraper.put(output, bits[0], bits[-1])
 
     @staticmethod
     def put_general_text_pairs(output, soup):
@@ -676,8 +873,8 @@ class PITCBillScraper:
                     continue
             for candidate in lines[index + 1:index + 4]:
                 candidate_key = re.sub(r"[^a-z0-9]+", " ", candidate.lower()).strip()
-                if candidate_key in labels or not candidate:
-                    continue
+                if candidate_key in BILL_HEADING_KEYWORDS or candidate_key in labels or not candidate:
+                    break
                 if any(ord(ch) > 127 for ch in candidate) and not re.search(r"\d", candidate):
                     continue
                 if key == "san_load" and not re.search(r"\d", candidate):
@@ -686,6 +883,57 @@ class PITCBillScraper:
                     continue
                 PITCBillScraper.put(output, key, candidate)
                 break
+
+    @staticmethod
+    def extract_history(soup, mode):
+        """Extract billing and payment history from history grid boxes.
+
+        mode == '1yr': Box 0 (skip 1st month) + Box 1 (all months) -> 11 historical months
+        mode == '6mo': Box 1 (.history-center-divider, skip 1st month) -> 5 historical months
+        """
+        wrapper = soup.select_one(".history-data-wrapper")
+        grids = wrapper.select(".history-block-grid") if wrapper else soup.select(".history-block-grid")
+        if not grids:
+            return {}
+
+        target_rows = []
+        if mode == "1yr":
+            box0_rows = grids[0].select(".history-row")
+            if len(box0_rows) > 1:
+                target_rows.extend(box0_rows[1:])
+            elif box0_rows:
+                target_rows.extend(box0_rows)
+
+            if len(grids) > 1:
+                target_rows.extend(grids[1].select(".history-row"))
+        elif mode == "6mo":
+            box1 = None
+            for g in grids:
+                classes = g.get("class", [])
+                if "history-center-divider" in classes:
+                    box1 = g
+                    break
+            if not box1 and len(grids) > 1:
+                box1 = grids[1]
+            elif not box1 and grids:
+                box1 = grids[0]
+
+            if box1:
+                box1_rows = box1.select(".history-row")
+                if len(box1_rows) > 1:
+                    target_rows.extend(box1_rows[1:])
+                elif box1_rows:
+                    target_rows.extend(box1_rows)
+
+        out = {}
+        for idx, row in enumerate(target_rows, 1):
+            cells = [clean(c.get_text(" ", strip=True)) for c in row.select(".history-cell")]
+            out[f"Month_{idx}"] = cells[0] if len(cells) > 0 else ""
+            out[f"Status_{idx}"] = cells[1] if len(cells) > 1 else ""
+            out[f"Units_{idx}"] = cells[2] if len(cells) > 2 else ""
+            out[f"Bill (Rs.)_{idx}"] = cells[3] if len(cells) > 3 else ""
+            out[f"Payment (Rs.)_{idx}"] = cells[4] if len(cells) > 4 else ""
+        return out
 
     @staticmethod
     def put_meter_tables(output, soup):
@@ -926,27 +1174,47 @@ class PITCBillScraper:
             raise RuntimeError(clean(BeautifulSoup(result.text, "lxml").get_text(" "))[:300] or "No bill returned")
         return BeautifulSoup(result.text, "lxml")
 
-    def scrape_account(self, raw_account, existing_status=None, stop_event=None, log_callback=None):
+    def scrape_account(self, raw_account, existing_status=None, stop_event=None, log_callback=None, history_mode=None):
+        if history_mode is None:
+            history_mode = self.history_mode
         raw = str(raw_account).strip()
         if re.fullmatch(r"[0-9.]+e[+\-]?[0-9]+", raw, re.I):
             raw = format(Decimal(raw), "f")
         account = re.sub(r"\D", "", raw)
+        clean_ac = re.sub(r"\D", "", raw)
+        bno = clean_ac[:2] if len(clean_ac) >= 2 else ""
+        sdiv = clean_ac[2:7] if len(clean_ac) >= 7 else (clean_ac[2:] if len(clean_ac) > 2 else "")
+
         if not re.fullmatch(r"\d{10,14}", account):
-            return {"_account": account, "Remarks": "Bill Not Found", "scrape_status": "Bill Not Found"}
+            return {
+                "_account": account,
+                "BNo": bno,
+                "SDiv": sdiv,
+                "Protected/Non-Protected": "",
+                "Total Payment": "",
+                "Total Units": "",
+                "Meter Type": "",
+                "Remarks": "Bill Not Found",
+                "scrape_status": "Bill Not Found",
+            }
         try:
             soup = self.search(account, stop_event=stop_event, log_callback=log_callback)
-            out = {"_account": account, "Remarks": "Processed", "scrape_status": "Processed"}
-            self.put_general_pairs(out, soup)
-            self.put_general_text_pairs(out, soup)
-            for cell in soup.select(".grid-col-cell"):
-                label, value = cell.select_one(".en-lbl"), cell.select_one(".val-space")
-                if label and value:
-                    self.put(out, label.get_text(" "), " | ".join(text_lines(value)))
+            out = {
+                "_account": account,
+                "BNo": bno,
+                "SDiv": sdiv,
+                "Remarks": "Fetched",
+                "scrape_status": "Fetched",
+            }
 
-            for node in soup.select(".charges-bd-row, .right-section-cell, .ibn-bill-messages__cell"):
-                bits = [clean(x) for x in node.stripped_strings if clean(x)]
-                if len(bits) >= 2:
-                    self.put(out, bits[0], bits[-1])
+            # 1. Structured grid cells (Status, Tariff, San Load, Name, Feeder, etc.)
+            self.put_grid_col_cells(out, soup)
+
+            # 2. Key-value pairs
+            self.put_general_pairs(out, soup)
+
+            # 3. Fallback text pairs
+            self.put_general_text_pairs(out, soup)
 
             self.put_meter_tables(out, soup)
             self.put_meter_text_sections(out, soup)
@@ -966,14 +1234,40 @@ class PITCBillScraper:
                             if next_k not in out or not out[next_k]:
                                 out[next_k] = nums[1]
 
-            def parse_num(val):
-                if val is None:
-                    return None
-                cleaned = re.sub(r"[^\d.]", "", str(val))
-                try:
-                    return float(cleaned) if cleaned else None
-                except ValueError:
-                    return None
+            # Extract Meter Type from kwh_meter_1 if present
+            m_type, m_no = extract_meter_type_and_no(out.get("kwh_meter_1"))
+            if m_type:
+                out["Meter Type"] = m_type
+                out["kwh_meter_1"] = m_no
+            elif "Meter Type" not in out or out["Meter Type"] is None:
+                out["Meter Type"] = ""
+
+            # Billing/Payment History extraction if requested
+            if history_mode in ("1yr", "6mo"):
+                hist_data = self.extract_history(soup, history_mode)
+                out.update(hist_data)
+
+            # Sanitize stray 'TARIFF CATEGORY' from status
+            if str(out.get("status", "")).strip().upper() == "TARIFF CATEGORY":
+                out["status"] = ""
+
+            # Protected/Non-Protected calculation:
+            # If consumer's tariff is A-1A(01) and he has not consumed above 200 units in last 6 months
+            # (current month + 5 months from history) then put "Protected", otherwise "Non-Protected".
+            h_6mo_data = self.extract_history(soup, "6mo")
+            curr_u = parse_num(out.get("kwh_units_1"))
+            if curr_u is None:
+                curr_u = parse_num(out.get("kwh_units"))
+            if curr_u is None:
+                curr_u = 0.0
+            h_units = [parse_num(h_6mo_data.get(f"Units_{i}")) for i in range(1, 6)]
+            out["Protected/Non-Protected"] = compute_protected_status(out.get("tariff"), curr_u, h_units)
+
+            # Total Payment calculation: sum of all payments already fetched in excel
+            out["Total Payment"] = compute_total_payment(out)
+
+            # Total Units calculation: sum of all units consumed fetched in excel
+            out["Total Units"] = compute_total_units(out)
 
             def format_num(num, decimals=4):
                 if num is None:
@@ -1048,7 +1342,17 @@ class PITCBillScraper:
         except InterruptedError:
             raise
         except Exception as exc:
-            return {"_account": account, "Remarks": "Bill Not Found", "scrape_status": "Bill Not Found"}
+            return {
+                "_account": account,
+                "BNo": bno,
+                "SDiv": sdiv,
+                "Protected/Non-Protected": "",
+                "Total Payment": "",
+                "Total Units": "",
+                "Meter Type": "",
+                "Remarks": "Bill Not Found",
+                "scrape_status": "Bill Not Found",
+            }
 
     def update_workbook(self, path, progress=None, stop_event=None, log_callback=None):
         if path.suffix.lower() not in SUPPORTED_EXTENSIONS:
@@ -1084,6 +1388,8 @@ class PITCBillScraper:
                 val = sheet.cell(r, col).value
                 col_name = existing_col_names.get(col)
                 if col_name and val is not None:
+                    if col_name == "status" and str(val).strip().upper() == "TARIFF CATEGORY":
+                        val = ""
                     record[col_name] = val
             record["AC No."] = raw_ac
             row_records.append(record)
@@ -1094,6 +1400,35 @@ class PITCBillScraper:
             if not is_dropped(col_name) and col_name not in ("scrape_status", "scrape status"):
                 all_keys.add(col_name)
 
+        # Pre-populate BNo, SDiv, Meter Type, Protected/Non-Protected, Total Payment, and Total Units on all records
+        for record in row_records:
+            ac_clean = re.sub(r"\D", "", str(record.get("AC No.", "")))
+            if not record.get("BNo"):
+                record["BNo"] = ac_clean[:2] if len(ac_clean) >= 2 else ""
+            if not record.get("SDiv") or (len(str(record.get("SDiv", "")).strip()) < 4 and len(ac_clean) >= 7):
+                record["SDiv"] = ac_clean[2:7] if len(ac_clean) >= 7 else (ac_clean[2:] if len(ac_clean) > 2 else "")
+            m_type, m_no = extract_meter_type_and_no(record.get("kwh_meter_1"))
+            if m_type:
+                record["Meter Type"] = m_type
+                record["kwh_meter_1"] = m_no
+            elif "Meter Type" not in record or record["Meter Type"] is None:
+                record["Meter Type"] = ""
+            clean_t = re.sub(r"\s+", "", str(record.get("tariff", ""))).upper()
+            if clean_t != "A-1A(01)":
+                record["Protected/Non-Protected"] = ""
+            elif not record.get("Protected/Non-Protected"):
+                curr_u = parse_num(record.get("kwh_units_1"))
+                if curr_u is None:
+                    curr_u = parse_num(record.get("kwh_units"))
+                if curr_u is None:
+                    curr_u = 0.0
+                h_units = [parse_num(record.get(f"Units_{i}")) for i in range(1, 6)]
+                record["Protected/Non-Protected"] = compute_protected_status(record.get("tariff"), curr_u, h_units)
+            if "Total Payment" not in record or record["Total Payment"] is None:
+                record["Total Payment"] = compute_total_payment(record)
+            if "Total Units" not in record or record["Total Units"] is None:
+                record["Total Units"] = compute_total_units(record)
+
         # 2. Process each account and merge results into record dictionary
         try:
             for done, record in enumerate(row_records, 1):
@@ -1102,10 +1437,33 @@ class PITCBillScraper:
                 account = record.get("AC No.")
                 existing_status = record.get("status")
                 try:
-                    result = self.scrape_account(account, existing_status=existing_status, stop_event=stop_event, log_callback=log_callback)
+                    result = self.scrape_account(
+                        account,
+                        existing_status=existing_status,
+                        stop_event=stop_event,
+                        log_callback=log_callback,
+                        history_mode=self.history_mode,
+                    )
                 except InterruptedError:
                     break
                 record.update(result)
+
+                # Ensure BNo and SDiv are always present
+                ac_clean = re.sub(r"\D", "", str(account))
+                if not record.get("BNo"):
+                    record["BNo"] = ac_clean[:2] if len(ac_clean) >= 2 else ""
+                if not record.get("SDiv") or (len(str(record.get("SDiv", "")).strip()) < 4 and len(ac_clean) >= 7):
+                    record["SDiv"] = ac_clean[2:7] if len(ac_clean) >= 7 else (ac_clean[2:] if len(ac_clean) > 2 else "")
+
+                m_type, m_no = extract_meter_type_and_no(record.get("kwh_meter_1"))
+                if m_type:
+                    record["Meter Type"] = m_type
+                    record["kwh_meter_1"] = m_no
+                elif "Meter Type" not in record or record["Meter Type"] is None:
+                    record["Meter Type"] = ""
+
+                if str(record.get("status", "")).strip().upper() == "TARIFF CATEGORY":
+                    record["status"] = ""
 
                 # Double-check status condition on merged record
                 effective_status = record.get("status") or existing_status
@@ -1114,6 +1472,23 @@ class PITCBillScraper:
                     record["diff_cum_mdi2"] = None
                     record["Actual MDI"] = None
                     record["Actual_Fix_Charges"] = None
+
+                # Recompute Total Payment and Total Units from merged record
+                record["Total Payment"] = compute_total_payment(record)
+                record["Total Units"] = compute_total_units(record)
+
+                # Ensure Protected/Non-Protected is blank for non-A-1A(01) tariffs
+                clean_t = re.sub(r"\s+", "", str(record.get("tariff", ""))).upper()
+                if clean_t != "A-1A(01)":
+                    record["Protected/Non-Protected"] = ""
+                elif not record.get("Protected/Non-Protected"):
+                    curr_u = parse_num(record.get("kwh_units_1"))
+                    if curr_u is None:
+                        curr_u = parse_num(record.get("kwh_units"))
+                    if curr_u is None:
+                        curr_u = 0.0
+                    h_units = [parse_num(record.get(f"Units_{i}")) for i in range(1, 6)]
+                    record["Protected/Non-Protected"] = compute_protected_status(record.get("tariff"), curr_u, h_units)
 
                 for k in result:
                     if not k.startswith("_") and not is_dropped(k) and k not in ("scrape_status", "scrape status"):
@@ -1134,13 +1509,52 @@ class PITCBillScraper:
         finally:
             # 3. Build ordered final headers and save all progress made up to now
             all_keys.add("AC No.")
-            all_keys.add("feeder")
-            all_keys.add("adjustments")
+            all_keys.add("BNo")
+            all_keys.add("SDiv")
+            all_keys.add("tariff")
+            all_keys.add("Protected/Non-Protected")
+            all_keys.add("san_load")
+            all_keys.add("status")
             all_keys.add("Current Bill")
             all_keys.add("Total FPA")
+            all_keys.add("adjustments")
+            all_keys.add("grand_total")
+            all_keys.add("payment")
+            all_keys.add("payment_date")
+            all_keys.add("Total Payment")
+            all_keys.add("Total Units")
+            all_keys.add("Meter Type")
+            all_keys.add("feeder")
             all_keys.add("Remarks")
             all_keys.discard("scrape_status")
             all_keys.discard("scrape status")
+
+            if self.history_mode == "1yr":
+                for i in range(1, 12):
+                    all_keys.add(f"Month_{i}")
+                    all_keys.add(f"Status_{i}")
+                    all_keys.add(f"Units_{i}")
+                    all_keys.add(f"Bill (Rs.)_{i}")
+                    all_keys.add(f"Payment (Rs.)_{i}")
+                for k in list(all_keys):
+                    m = re.match(r"^(?:Month|Status|Units|Bill \(Rs\.\)|Payment \(Rs\.\))_(\d+)$", k)
+                    if m and int(m.group(1)) > 11:
+                        all_keys.discard(k)
+            elif self.history_mode == "6mo":
+                for i in range(1, 6):
+                    all_keys.add(f"Month_{i}")
+                    all_keys.add(f"Status_{i}")
+                    all_keys.add(f"Units_{i}")
+                    all_keys.add(f"Bill (Rs.)_{i}")
+                    all_keys.add(f"Payment (Rs.)_{i}")
+                for k in list(all_keys):
+                    m = re.match(r"^(?:Month|Status|Units|Bill \(Rs\.\)|Payment \(Rs\.\))_(\d+)$", k)
+                    if m and int(m.group(1)) > 5:
+                        all_keys.discard(k)
+            else:
+                for k in list(all_keys):
+                    if re.match(r"^(?:Month|Status|Units|Bill \(Rs\.\)|Payment \(Rs\.\))_\d+$", k):
+                        all_keys.discard(k)
 
             final_headers = order_output_headers([k for k in all_keys if not is_dropped(k)])
 
@@ -1160,12 +1574,17 @@ class PITCBillScraper:
                         raw_val = val if val is not None else record.get("scrape_status")
                         if raw_val is not None:
                             val_str = str(raw_val).strip().lower()
-                            val = "Processed" if val_str in ("processed", "ok", "done") else "Bill Not Found"
+                            val = "Fetched" if val_str in ("fetched", "processed", "ok", "done") else "Bill Not Found"
                         else:
                             val = ""
                     elif val is not None and should_be_numeric(h):
                         val = excel_numeric_value(val)
                     sheet.cell(row_idx, col_idx).value = val if val is not None else ""
+
+            if hasattr(sheet, "auto_filter"):
+                max_c = len(final_headers)
+                max_r = len(row_records) + 1
+                sheet.auto_filter.ref = f"A1:{excel_col(max_c)}{max_r}"
 
             workbook.save(path)
 
@@ -1195,7 +1614,7 @@ LOG_BG = "#1e1e1e"             # Same as IDE code editor canvas
 LOG_FG = "#d4d4d4"             # Clean readable terminal text
 
 # Version & Secure License/Update server endpoint (keeps GitHub repo 100% private)
-APP_VERSION = "1.3.1"
+APP_VERSION = "1.3.2"
 UPDATE_API_URL = f"{LICENSE_API_URL}/api/updates/latest"
 
 
@@ -2525,8 +2944,8 @@ class BillScraperApp(tk.Tk):
         self.title("Bill Scrapper")
         self.configure(bg=BG_DARK)
         self.resizable(True, True)
-        self.geometry("640x600")
-        self.minsize(580, 520)
+        self.geometry("640x630")
+        self.minsize(580, 540)
 
         self._icon_img = None
         try:
@@ -2617,6 +3036,25 @@ class BillScraperApp(tk.Tk):
         )
 
         self.style.configure(
+            "TCheckbutton",
+            background=CARD_BG,
+            foreground=TEXT_WHITE,
+            font=(UI_FONT, 9),
+            indicatorbackground=INPUT_BG,
+            indicatorforeground=ACCENT_GREEN,
+            upperbordercolor=BORDER_COLOR,
+            lowerbordercolor=BORDER_COLOR,
+            focuscolor="none",
+        )
+        self.style.map(
+            "TCheckbutton",
+            background=[("active", CARD_BG)],
+            foreground=[("active", TEXT_WHITE), ("disabled", TEXT_MUTED)],
+            indicatorbackground=[("selected", INPUT_BG), ("active", INPUT_BG), ("disabled", CARD_BG)],
+            indicatorforeground=[("selected", ACCENT_GREEN), ("disabled", TEXT_MUTED)],
+        )
+
+        self.style.configure(
             "Green.Horizontal.TProgressbar",
             troughcolor=INPUT_BG,
             background=ACCENT_GREEN,
@@ -2637,6 +3075,10 @@ class BillScraperApp(tk.Tk):
         self.stop_event = threading.Event()
         self.input_var = tk.StringVar()
         self.delay_var = tk.DoubleVar(value=2.0)
+        self.history_1yr_var = tk.BooleanVar(value=False)
+        self.history_6mo_var = tk.BooleanVar(value=False)
+        self.chk_history_1yr: ttk.Checkbutton | None = None
+        self.chk_history_6mo: ttk.Checkbutton | None = None
         self.status_var = tk.StringVar(value="Ready. Choose an Excel (.xlsx) or LibreOffice (.ods) file containing AC numbers in Column A.")
         self.total_var = tk.StringVar(value="0")
         self.ok_var = tk.StringVar(value="0")
@@ -2743,6 +3185,14 @@ class BillScraperApp(tk.Tk):
         else:
             self.destroy()
 
+    def _on_toggle_history_1yr(self):
+        if self.history_1yr_var.get():
+            self.history_6mo_var.set(False)
+
+    def _on_toggle_history_6mo(self):
+        if self.history_6mo_var.get():
+            self.history_1yr_var.set(False)
+
     def build_ui(self):
         root = ttk.Frame(self, style="Root.TFrame", padding=(18, 14, 18, 14))
         root.pack(fill="both", expand=True)
@@ -2821,7 +3271,27 @@ class BillScraperApp(tk.Tk):
         ttk.Label(settings_box, text="Delay (seconds):").grid(row=0, column=0, sticky="w", pady=2)
         spin = ttk.Spinbox(settings_box, from_=0.5, to=30.0, increment=0.5, textvariable=self.delay_var, width=6)
         spin.grid(row=0, column=1, sticky="w", padx=(6, 4), pady=2)
-        ttk.Label(settings_box, text="(Default 2.0s prevents PITC blocking)", style="Muted.TLabel").grid(row=1, column=0, columnspan=2, sticky="w", pady=(2, 0))
+        ttk.Label(settings_box, text="(Default 2.0s prevents PITC blocking)", style="Muted.TLabel").grid(row=1, column=0, columnspan=2, sticky="w", pady=(2, 4))
+
+        self.chk_history_1yr = ttk.Checkbutton(
+            settings_box,
+            text="Billing/Payment History (1 year)",
+            variable=self.history_1yr_var,
+            command=self._on_toggle_history_1yr,
+            style="TCheckbutton",
+            cursor="hand2",
+        )
+        self.chk_history_1yr.grid(row=2, column=0, columnspan=2, sticky="w", pady=(2, 1))
+
+        self.chk_history_6mo = ttk.Checkbutton(
+            settings_box,
+            text="Billing Payment History (6 months)",
+            variable=self.history_6mo_var,
+            command=self._on_toggle_history_6mo,
+            style="TCheckbutton",
+            cursor="hand2",
+        )
+        self.chk_history_6mo.grid(row=3, column=0, columnspan=2, sticky="w", pady=(1, 2))
 
         stats_box = ttk.LabelFrame(mid_frame, text=" Progress Summary ", padding=8)
         stats_box.pack(side="right", fill="both", expand=True, padx=(6, 0))
@@ -2829,7 +3299,7 @@ class BillScraperApp(tk.Tk):
         ttk.Label(stats_box, text="Total:", style="StatTitle.TLabel").grid(row=0, column=0, sticky="w", padx=4)
         ttk.Label(stats_box, textvariable=self.total_var, style="StatVal.TLabel").grid(row=0, column=1, sticky="w", padx=4)
 
-        ttk.Label(stats_box, text="Processed:", style="StatTitle.TLabel").grid(row=0, column=2, sticky="w", padx=4)
+        ttk.Label(stats_box, text="Fetched:", style="StatTitle.TLabel").grid(row=0, column=2, sticky="w", padx=4)
         ttk.Label(stats_box, textvariable=self.ok_var, style="StatOk.TLabel").grid(row=0, column=3, sticky="w", padx=4)
 
         ttk.Label(stats_box, text="Errors:", style="StatTitle.TLabel").grid(row=0, column=4, sticky="w", padx=4)
@@ -2943,6 +3413,12 @@ class BillScraperApp(tk.Tk):
             messagebox.showerror("Invalid Delay", "Delay must be a positive number.")
             return
 
+        history_mode = None
+        if self.history_1yr_var.get():
+            history_mode = "1yr"
+        elif self.history_6mo_var.get():
+            history_mode = "6mo"
+
         self.stop_event.clear()
         self.progress.configure(value=0)
         self.success_count = 0
@@ -2953,17 +3429,26 @@ class BillScraperApp(tk.Tk):
 
         self.start_button.configure(state="disabled", bg=BTN_DISABLED_BG)
         self.cancel_button.configure(state="normal", bg=ACCENT_RED)
+        if self.chk_history_1yr:
+            self.chk_history_1yr.configure(state="disabled")
+        if self.chk_history_6mo:
+            self.chk_history_6mo.configure(state="disabled")
+
         self.write_log(f"--- Starting Scraping on: {path.name} ---", "info")
         self.write_log(f"Request delay: {delay}s | Calculating Actual MDI (max diff x MF) & Actual Fix Charges...", "info")
+        if history_mode == "1yr":
+            self.write_log("Billing/Payment History: 1 Year (11 historical months) enabled", "info")
+        elif history_mode == "6mo":
+            self.write_log("Billing/Payment History: 6 Months (5 historical months) enabled", "info")
 
-        threading.Thread(target=self.run, args=(path, delay), daemon=True).start()
+        threading.Thread(target=self.run, args=(path, delay, history_mode), daemon=True).start()
 
-    def run(self, path, delay):
+    def run(self, path, delay, history_mode=None):
         try:
             def progress(done, total, row):
                 raw_status = row.get("Remarks") or row.get("scrape_status", "")
-                if str(raw_status).strip().lower() in ("ok", "done", "processed"):
-                    status_text = "Processed"
+                if str(raw_status).strip().lower() in ("ok", "done", "processed", "fetched"):
+                    status_text = "Fetched"
                 else:
                     status_text = "Bill Not Found"
                 self.events.put(("progress", done, total, row.get("_account", ""), status_text))
@@ -2971,7 +3456,7 @@ class BillScraperApp(tk.Tk):
             def log_callback(msg):
                 self.events.put(("log", msg))
 
-            PITCBillScraper(delay=delay).update_workbook(path, progress, self.stop_event, log_callback=log_callback)
+            PITCBillScraper(delay=delay, history_mode=history_mode).update_workbook(path, progress, self.stop_event, log_callback=log_callback)
             self.events.put(("done", str(path), self.stop_event.is_set()))
         except Exception as exc:
             self.events.put(("error", str(exc)))
@@ -3036,13 +3521,13 @@ class BillScraperApp(tk.Tk):
                     _, done, total, account, status = event
                     self.progress.configure(maximum=max(total, 1), value=done)
                     self.total_var.set(str(total))
-                    display_status = "Processed" if str(status).strip().lower() in ("ok", "done", "processed") else "Bill Not Found"
-                    self.status_var.set(f"Processed {done} of {total} accounts...")
+                    display_status = "Fetched" if str(status).strip().lower() in ("ok", "done", "processed", "fetched") else "Bill Not Found"
+                    self.status_var.set(f"Fetched {done} of {total} accounts...")
 
-                    if display_status == "Processed":
+                    if display_status == "Fetched":
                         self.success_count += 1
                         self.ok_var.set(str(self.success_count))
-                        self.write_log(f"[{done}/{total}] {account}: Processed", "ok")
+                        self.write_log(f"[{done}/{total}] {account}: Fetched", "ok")
                     else:
                         self.error_count += 1
                         self.err_var.set(str(self.error_count))
@@ -3052,6 +3537,10 @@ class BillScraperApp(tk.Tk):
                     _, path, cancelled = event
                     self.start_button.configure(state="normal", bg=ACCENT_GREEN)
                     self.cancel_button.configure(state="disabled", bg=BTN_DISABLED_BG)
+                    if self.chk_history_1yr:
+                        self.chk_history_1yr.configure(state="normal")
+                    if self.chk_history_6mo:
+                        self.chk_history_6mo.configure(state="normal")
                     if cancelled:
                         self.status_var.set("Stopped (All progress saved)")
                         self.write_log(
@@ -3077,6 +3566,10 @@ class BillScraperApp(tk.Tk):
                 elif event[0] == "error":
                     self.start_button.configure(state="normal", bg=ACCENT_GREEN)
                     self.cancel_button.configure(state="disabled", bg=BTN_DISABLED_BG)
+                    if self.chk_history_1yr:
+                        self.chk_history_1yr.configure(state="normal")
+                    if self.chk_history_6mo:
+                        self.chk_history_6mo.configure(state="normal")
                     self.status_var.set("Failed with error.")
                     self.write_log("ERROR: " + event[1], "err")
                     messagebox.showerror("Export Failed", event[1])

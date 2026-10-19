@@ -1,1 +1,1 @@
-• Add Billing History (1yr/6mo), Total Units, Total Payment, Protected status for A-1A(01), SDiv correction, and Fetched status
+• Add custom Bills URL with persistent configuration defaulting to https://bill.pitc.com.pk/pescobill

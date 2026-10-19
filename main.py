@@ -759,10 +759,11 @@ def load_spreadsheet(path: Path):
 
 
 class PITCBillScraper:
-    def __init__(self, delay=2.0, timeout=90, history_mode=None):
+    def __init__(self, delay=2.0, timeout=90, history_mode=None, url=None):
         self.delay = delay
         self.timeout = timeout
         self.history_mode = history_mode
+        self.url = (url or URL).strip().rstrip('/')
 
     @staticmethod
     def put(output, name, value):
@@ -1162,14 +1163,15 @@ class PITCBillScraper:
     def search(self, account, stop_event=None, log_callback=None):
         session = requests.Session()
         session.headers.update({"User-Agent": "Mozilla/5.0 (compatible; PITC-Bill-Exporter/1.0)"})
-        page = self._fetch_url_with_retry(session, "get", URL, stop_event=stop_event, log_callback=log_callback)
+        target_url = getattr(self, "url", URL)
+        page = self._fetch_url_with_retry(session, "get", target_url, stop_event=stop_event, log_callback=log_callback)
         soup = BeautifulSoup(page.text, "lxml")
         form = soup.select_one("form#SubmitForm") or soup.find("form")
         if not form:
             raise RuntimeError("PITC search form was not found")
         payload = {i["name"]: i.get("value", "") for i in form.select("input[type=hidden][name]")}
         payload.update({"rbSearchByList": "refno", "searchTextBox": account, "ruCodeTextBox": "", "btnSearch": "Search"})
-        result = self._fetch_url_with_retry(session, "post", URL, data=payload, stop_event=stop_event, log_callback=log_callback)
+        result = self._fetch_url_with_retry(session, "post", target_url, data=payload, stop_event=stop_event, log_callback=log_callback)
         if "CONSUMER DETAIL" not in result.text.upper() and "CONSUMER DETAILS" not in result.text.upper():
             raise RuntimeError(clean(BeautifulSoup(result.text, "lxml").get_text(" "))[:300] or "No bill returned")
         return BeautifulSoup(result.text, "lxml")
@@ -1614,7 +1616,7 @@ LOG_BG = "#1e1e1e"             # Same as IDE code editor canvas
 LOG_FG = "#d4d4d4"             # Clean readable terminal text
 
 # Version & Secure License/Update server endpoint (keeps GitHub repo 100% private)
-APP_VERSION = "1.3.2"
+APP_VERSION = "1.3.3"
 UPDATE_API_URL = f"{LICENSE_API_URL}/api/updates/latest"
 
 
@@ -2230,6 +2232,41 @@ def get_os_info() -> str:
         return f"{platform.system()} {platform.release()} ({platform.machine()})"
     except Exception:
         return sys.platform
+
+
+def get_config_file_path() -> Path:
+    """Return local path to config.json in the user's OS configuration folder."""
+    if sys.platform == "win32":
+        base = Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming"))
+        app_dir = base / "BillScrapper"
+    else:
+        app_dir = Path.home() / ".billscrapper"
+    app_dir.mkdir(parents=True, exist_ok=True)
+    return app_dir / "config.json"
+
+
+def load_app_config() -> dict:
+    """Load cached app configuration from local disk."""
+    path = get_config_file_path()
+    if path.is_file():
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {}
+
+
+def save_app_config(data: dict):
+    """Save app configuration to local disk."""
+    path = get_config_file_path()
+    try:
+        existing = load_app_config()
+        existing.update(data)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(existing, f, indent=2)
+    except Exception:
+        pass
 
 
 def get_license_file_path() -> Path:
@@ -3131,6 +3168,10 @@ class BillScraperApp(tk.Tk):
         self.events = queue.Queue()
         self.stop_event = threading.Event()
         self.input_var = tk.StringVar()
+        config = load_app_config()
+        self.url_var = tk.StringVar(value=config.get("bills_url", URL))
+        self.url_entry: ttk.Entry | None = None
+        self.url_btn: ttk.Button | None = None
         self.delay_var = tk.DoubleVar(value=2.0)
         self.history_1yr_var = tk.BooleanVar(value=False)
         self.history_6mo_var = tk.BooleanVar(value=False)
@@ -3317,6 +3358,15 @@ class BillScraperApp(tk.Tk):
 
         browse_btn = ttk.Button(self.files_frame, text="Browse...", command=self.choose_input)
         browse_btn.grid(row=0, column=2, pady=4)
+
+        ttk.Label(self.files_frame, text="Bills URL:", font=(UI_FONT, 9, "bold")).grid(row=1, column=0, sticky="w", pady=4)
+        self.url_entry = ttk.Entry(self.files_frame, textvariable=self.url_var, font=(UI_FONT, 9), state="readonly")
+        self.url_entry.grid(row=1, column=1, sticky="ew", padx=(8, 8), pady=4)
+        self.url_entry.bind("<Return>", lambda e: self.toggle_url() if self.url_btn and self.url_btn.cget("text") == "Save" else None)
+
+        self.url_btn = ttk.Button(self.files_frame, text="Edit", command=self.toggle_url)
+        self.url_btn.grid(row=1, column=2, pady=4)
+
         self.files_frame.columnconfigure(1, weight=1)
 
         mid_frame = ttk.Frame(root, style="Root.TFrame")
@@ -3443,6 +3493,19 @@ class BillScraperApp(tk.Tk):
         else:
             messagebox.showinfo("Select File", "Please select a workbook file first.")
 
+    def toggle_url(self):
+        if not self.url_btn or not self.url_entry:
+            return
+        if self.url_btn.cget("text") == "Edit":
+            self.url_entry.configure(state="normal")
+            self.url_btn.configure(text="Save")
+            self.url_entry.focus()
+        else:
+            self.url_entry.configure(state="readonly")
+            self.url_btn.configure(text="Edit")
+            url = self.url_var.get().strip()
+            save_app_config({"bills_url": url})
+
     def write_log(self, text, tag=None):
         self.log.configure(state="normal")
         if tag:
@@ -3491,16 +3554,23 @@ class BillScraperApp(tk.Tk):
         if self.chk_history_6mo:
             self.chk_history_6mo.configure(state="disabled")
 
+        url = self.url_var.get().strip()
+        save_app_config({"bills_url": url})
+        if self.url_btn and self.url_btn.cget("text") == "Save":
+            if self.url_entry:
+                self.url_entry.configure(state="readonly")
+            self.url_btn.configure(text="Edit")
+
         self.write_log(f"--- Starting Scraping on: {path.name} ---", "info")
         self.write_log(f"Request delay: {delay}s | Calculating Actual MDI (max diff x MF) & Actual Fix Charges...", "info")
         if history_mode == "1yr":
             self.write_log("Billing/Payment History: 1 Year (11 historical months) enabled", "info")
         elif history_mode == "6mo":
-            self.write_log("Billing/Payment History: 6 Months (5 historical months) enabled", "info")
+            self.write_log("Billing Payment History: 6 Months (5 historical months) enabled", "info")
 
-        threading.Thread(target=self.run, args=(path, delay, history_mode), daemon=True).start()
+        threading.Thread(target=self.run, args=(path, delay, history_mode, url), daemon=True).start()
 
-    def run(self, path, delay, history_mode=None):
+    def run(self, path, delay, history_mode=None, url=None):
         try:
             def progress(done, total, row):
                 raw_status = row.get("Remarks") or row.get("scrape_status", "")
@@ -3513,7 +3583,7 @@ class BillScraperApp(tk.Tk):
             def log_callback(msg):
                 self.events.put(("log", msg))
 
-            PITCBillScraper(delay=delay, history_mode=history_mode).update_workbook(path, progress, self.stop_event, log_callback=log_callback)
+            PITCBillScraper(delay=delay, history_mode=history_mode, url=url).update_workbook(path, progress, self.stop_event, log_callback=log_callback)
             self.events.put(("done", str(path), self.stop_event.is_set()))
         except Exception as exc:
             self.events.put(("error", str(exc)))

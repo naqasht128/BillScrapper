@@ -1897,9 +1897,11 @@ class UpdateDialog(tk.Toplevel):
         self.prog = ttk.Progressbar(container, mode="determinate", style="Green.Horizontal.TProgressbar")
         self.prog.pack(fill="x", pady=(0, 10))
 
+        initial_total_mb = (self.info.file_size / (1024 * 1024)) if getattr(self.info, "file_size", 0) else 0.0
+        details_txt = f"0% (0.0 MB / {initial_total_mb:.1f} MB)" if initial_total_mb > 0 else "0% (0.0 MB)"
         self.lbl_details = ttk.Label(
             container,
-            text="0% (0.0 MB / 0.0 MB)",
+            text=details_txt,
             style="Sub.TLabel",
         )
         self.lbl_details.pack(anchor="w", pady=(0, 12))
@@ -1928,6 +1930,8 @@ class UpdateDialog(tk.Toplevel):
                 kind = msg[0]
                 if kind == "progress":
                     self._update_progress(*msg[1:])
+                elif kind == "progress_indeterminate":
+                    self._update_progress_indeterminate(msg[1])
                 elif kind == "complete":
                     self._on_download_complete()
                 elif kind == "error":
@@ -1953,11 +1957,49 @@ class UpdateDialog(tk.Toplevel):
             tpath = Path(tempfile.gettempdir()) / f"update_{int(time.time())}_{fname}"
             self.temp_file = str(tpath)
 
-            headers = {"User-Agent": "BillScrapper-DesktopApp"}
+            headers = {
+                "User-Agent": "BillScrapper-DesktopApp",
+                "Accept-Encoding": "identity",
+            }
             with requests.get(self.info.download_url, headers=headers, stream=True, timeout=30) as r:
                 r.raise_for_status()
-                total = int(r.headers.get("content-length", self.info.file_size or 0))
+
+                # Extract total reliably
+                total = 0
+                cl_header = r.headers.get("content-length")
+                if cl_header:
+                    try:
+                        total = int(cl_header)
+                    except (ValueError, TypeError):
+                        pass
+                if total <= 0:
+                    cr_header = r.headers.get("content-range")
+                    if cr_header and "/" in cr_header:
+                        try:
+                            total = int(cr_header.split("/")[-1].strip())
+                        except (ValueError, TypeError):
+                            pass
+                if total <= 0 and getattr(self.info, "file_size", 0):
+                    try:
+                        total = int(self.info.file_size)
+                    except (ValueError, TypeError):
+                        pass
+
+                # Quick fallback HEAD request with identity encoding
+                if total <= 0:
+                    try:
+                        head_resp = requests.head(self.info.download_url, headers=headers, allow_redirects=True, timeout=6)
+                        head_cl = head_resp.headers.get("content-length")
+                        if head_cl:
+                            total = int(head_cl)
+                    except Exception:
+                        pass
+
                 downloaded = 0
+                if total > 0:
+                    self.queue.put(("progress", 0, 0.0, total / (1024 * 1024)))
+                else:
+                    self.queue.put(("progress_indeterminate", 0.0))
 
                 with open(tpath, "wb") as f:
                     for chunk in r.iter_content(chunk_size=65536):
@@ -1966,11 +2008,13 @@ class UpdateDialog(tk.Toplevel):
                         if chunk:
                             f.write(chunk)
                             downloaded += len(chunk)
+                            d_mb = downloaded / (1024 * 1024)
                             if total > 0:
-                                pct = int((downloaded / total) * 100)
-                                d_mb = downloaded / (1024 * 1024)
+                                pct = min(100, max(0, int((downloaded / total) * 100)))
                                 t_mb = total / (1024 * 1024)
                                 self.queue.put(("progress", pct, d_mb, t_mb))
+                            else:
+                                self.queue.put(("progress_indeterminate", d_mb))
 
             if self.cancelled:
                 try:
@@ -1988,13 +2032,26 @@ class UpdateDialog(tk.Toplevel):
     def _update_progress(self, pct, downloaded_mb, total_mb):
         if not self.winfo_exists():
             return
+        if self.prog["mode"] != "determinate":
+            self.prog.configure(mode="determinate")
         self.prog.configure(maximum=100, value=pct)
         self.lbl_status.configure(text="Downloading update package...")
         self.lbl_details.configure(text=f"{pct}% ({downloaded_mb:.1f} MB / {total_mb:.1f} MB)")
 
+    def _update_progress_indeterminate(self, downloaded_mb):
+        if not self.winfo_exists():
+            return
+        if self.prog["mode"] != "indeterminate":
+            self.prog.configure(mode="indeterminate")
+        self.prog.step(4)
+        self.lbl_status.configure(text="Downloading update package...")
+        self.lbl_details.configure(text=f"Downloading... ({downloaded_mb:.1f} MB)")
+
     def _on_download_complete(self):
         if not self.winfo_exists():
             return
+        if self.prog["mode"] != "determinate":
+            self.prog.configure(mode="determinate")
         self.prog.configure(maximum=100, value=100)
         self.lbl_status.configure(text="Download complete! Restarting to apply update...")
         self.lbl_details.configure(text="Please wait a moment...")

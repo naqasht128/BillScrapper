@@ -412,6 +412,7 @@ app.get('/api/updates/latest', async (req, res) => {
             return res.json({
               version: tag,
               file_name: setupAsset.name,
+              file_size: setupAsset.size || 0,
               download_url: `${proto}://${host}/api/updates/download?asset_id=${setupAsset.id}`,
               release_notes: data.body || 'New update available with performance enhancements.'
             });
@@ -435,6 +436,7 @@ app.get('/api/updates/latest', async (req, res) => {
         return res.json({
           version: updateRecord.version.replace(/^v/, ''),
           file_name: updateRecord.file_name || 'BillScrapper-Setup.exe',
+          file_size: updateRecord.file_size || 0,
           download_url: updateRecord.download_url,
           release_notes: updateRecord.release_notes || 'New update available.'
         });
@@ -483,13 +485,16 @@ app.get('/api/updates/download', async (req, res) => {
       }
 
       const contentType = ghRes.headers.get('content-type') || 'application/octet-stream';
-      const contentLength = ghRes.headers.get('content-length');
+      const arrayBuffer = await ghRes.arrayBuffer();
+      const buffer = Buffer.from(arrayBuffer);
+
       res.setHeader('Content-Type', contentType);
-      if (contentLength) res.setHeader('Content-Length', contentLength);
+      res.setHeader('Content-Length', buffer.length);
+      res.setHeader('Cache-Control', 'no-transform, public, max-age=300');
+      res.setHeader('Accept-Ranges', 'bytes');
       res.setHeader('Content-Disposition', 'attachment; filename="BillScrapper-Setup.exe"');
 
-      const arrayBuffer = await ghRes.arrayBuffer();
-      return res.send(Buffer.from(arrayBuffer));
+      return res.send(buffer);
     }
 
     // Direct URL redirect fallback

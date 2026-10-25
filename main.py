@@ -2977,15 +2977,6 @@ class AboutDialog(tk.Toplevel):
         )
         self.change_key_btn.pack(side="right", padx=(0, 4))
 
-        hw_lbl = ttk.Label(
-            lic_card,
-            text=f"Hardware ID: {get_device_id()}",
-            font=(MONO_FONT, 8),
-            foreground=TEXT_MUTED,
-            background=CARD_BG,
-        )
-        hw_lbl.pack(anchor="w", pady=(0, 2))
-
         plan_lbl = ttk.Label(
             lic_card,
             text=f"Plan: {plan_str}",
@@ -3393,11 +3384,6 @@ class BillScraperApp(tk.Tk):
         title_lbl = ttk.Label(header_top, text="Bill Scrapper", style="Title.TLabel")
         title_lbl.pack(side="left")
 
-        ver_box = ttk.Frame(header_top, style="Root.TFrame")
-        ver_box.pack(side="right", anchor="e")
-
-        ttk.Label(ver_box, text=f"v{APP_VERSION}", style="Sub.TLabel").pack(side="right")
-
         sub_lbl = ttk.Label(header_frame, text="Downloads consumers information/Billing data into Excel", style="Sub.TLabel")
         sub_lbl.pack(anchor="w", pady=(2, 0))
 
@@ -3437,28 +3423,25 @@ class BillScraperApp(tk.Tk):
 
         ttk.Label(self.files_frame, text="Workbook (.xlsx / .ods):", font=(UI_FONT, 9, "bold")).grid(row=0, column=0, sticky="w", pady=4)
         entry = ttk.Entry(self.files_frame, textvariable=self.input_var, font=(UI_FONT, 9))
-        entry.grid(row=0, column=1, sticky="ew", padx=(8, 8), pady=4)
+        entry.grid(row=0, column=1, sticky="ew", padx=(8, 6), pady=4)
 
-        wb_btn_box = ttk.Frame(self.files_frame, style="Card.TFrame")
-        wb_btn_box.grid(row=0, column=2, sticky="w", pady=4)
-
-        browse_btn = ttk.Button(wb_btn_box, text="Browse...", command=self.choose_input)
-        browse_btn.pack(side="left", padx=(0, 6))
+        browse_btn = ttk.Button(self.files_frame, text="Browse...", command=self.choose_input)
+        browse_btn.grid(row=0, column=2, padx=(0, 6), pady=4)
 
         template_btn = tk.Button(
-            wb_btn_box, text="Template", command=self.download_template,
+            self.files_frame, text="Template", command=self.download_template,
             bg="#0e639c", fg="white", activebackground="#1177bb", activeforeground="white",
             font=(UI_FONT, 9, "bold"), relief="flat", padx=10, pady=3, cursor="hand2", bd=0
         )
-        template_btn.pack(side="left")
+        template_btn.grid(row=0, column=3, sticky="ew", pady=4)
 
         ttk.Label(self.files_frame, text="Bills URL:", font=(UI_FONT, 9, "bold")).grid(row=1, column=0, sticky="w", pady=4)
         self.url_entry = ttk.Entry(self.files_frame, textvariable=self.url_var, font=(UI_FONT, 9), state="readonly")
-        self.url_entry.grid(row=1, column=1, sticky="ew", padx=(8, 8), pady=4)
+        self.url_entry.grid(row=1, column=1, columnspan=2, sticky="ew", padx=(8, 6), pady=4)
         self.url_entry.bind("<Return>", lambda e: self.toggle_url() if self.url_btn and self.url_btn.cget("text") == "Save" else None)
 
         self.url_btn = ttk.Button(self.files_frame, text="Edit", command=self.toggle_url)
-        self.url_btn.grid(row=1, column=2, sticky="w", pady=4)
+        self.url_btn.grid(row=1, column=3, sticky="ew", pady=4)
 
         self.files_frame.columnconfigure(1, weight=1)
 

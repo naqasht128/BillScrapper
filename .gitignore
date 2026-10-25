@@ -48,3 +48,7 @@ Thumbs.db
 # Admin Key Generator local build
 generate_key.exe
 generate_key.spec
+
+# Admin Key Generator & Licensing Tools
+generate_key.py
+BLUEPRINT.md

@@ -1,1 +1,1 @@
-• Added native Windows 7 compatibility installer with automatic VC++ runtime integration
+• UI revamp: Relocate action buttons with Pause support, move update check to About dialog, add Excel template generator, align URL entry, and relocate orange About button to top right

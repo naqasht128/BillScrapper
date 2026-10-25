@@ -36,7 +36,8 @@ from tkinter import filedialog, messagebox, ttk
 import requests
 from bs4 import BeautifulSoup
 from lxml import etree
-from openpyxl import load_workbook
+import openpyxl
+from openpyxl import Workbook, load_workbook
 
 URL = "https://bill.pitc.com.pk/pescobill"
 LICENSE_API_URL = os.environ.get("LICENSE_API_URL", "https://bill-scrapper.vercel.app").rstrip("/")
@@ -1126,11 +1127,15 @@ class PITCBillScraper:
                             output["Total FPA"] = cand
                             break
 
-    def _fetch_url_with_retry(self, session, method, url, data=None, stop_event=None, log_callback=None):
+    def _fetch_url_with_retry(self, session, method, url, data=None, stop_event=None, log_callback=None, pause_event=None):
         was_disconnected = False
         while True:
             if stop_event and stop_event.is_set():
                 raise InterruptedError("Operation stopped by user")
+            while pause_event and not pause_event.is_set():
+                if stop_event and stop_event.is_set():
+                    raise InterruptedError("Operation stopped by user")
+                time.sleep(0.2)
             try:
                 if method.lower() == "post":
                     resp = session.post(url, data=data, timeout=self.timeout)
@@ -1147,6 +1152,10 @@ class PITCBillScraper:
                 for _ in range(30):
                     if stop_event and stop_event.is_set():
                         raise InterruptedError("Operation stopped by user")
+                    while pause_event and not pause_event.is_set():
+                        if stop_event and stop_event.is_set():
+                            raise InterruptedError("Operation stopped by user")
+                        time.sleep(0.2)
                     time.sleep(0.1)
             except requests.exceptions.HTTPError as exc:
                 if exc.response is not None and 500 <= exc.response.status_code <= 504:
@@ -1156,27 +1165,31 @@ class PITCBillScraper:
                     for _ in range(20):
                         if stop_event and stop_event.is_set():
                             raise InterruptedError("Operation stopped by user")
+                        while pause_event and not pause_event.is_set():
+                            if stop_event and stop_event.is_set():
+                                raise InterruptedError("Operation stopped by user")
+                            time.sleep(0.2)
                         time.sleep(0.1)
                     continue
                 raise
 
-    def search(self, account, stop_event=None, log_callback=None):
+    def search(self, account, stop_event=None, log_callback=None, pause_event=None):
         session = requests.Session()
         session.headers.update({"User-Agent": "Mozilla/5.0 (compatible; PITC-Bill-Exporter/1.0)"})
         target_url = getattr(self, "url", URL)
-        page = self._fetch_url_with_retry(session, "get", target_url, stop_event=stop_event, log_callback=log_callback)
+        page = self._fetch_url_with_retry(session, "get", target_url, stop_event=stop_event, log_callback=log_callback, pause_event=pause_event)
         soup = BeautifulSoup(page.text, "lxml")
         form = soup.select_one("form#SubmitForm") or soup.find("form")
         if not form:
             raise RuntimeError("PITC search form was not found")
         payload = {i["name"]: i.get("value", "") for i in form.select("input[type=hidden][name]")}
         payload.update({"rbSearchByList": "refno", "searchTextBox": account, "ruCodeTextBox": "", "btnSearch": "Search"})
-        result = self._fetch_url_with_retry(session, "post", target_url, data=payload, stop_event=stop_event, log_callback=log_callback)
+        result = self._fetch_url_with_retry(session, "post", target_url, data=payload, stop_event=stop_event, log_callback=log_callback, pause_event=pause_event)
         if "CONSUMER DETAIL" not in result.text.upper() and "CONSUMER DETAILS" not in result.text.upper():
             raise RuntimeError(clean(BeautifulSoup(result.text, "lxml").get_text(" "))[:300] or "No bill returned")
         return BeautifulSoup(result.text, "lxml")
 
-    def scrape_account(self, raw_account, existing_status=None, stop_event=None, log_callback=None, history_mode=None):
+    def scrape_account(self, raw_account, existing_status=None, stop_event=None, log_callback=None, history_mode=None, pause_event=None):
         if history_mode is None:
             history_mode = self.history_mode
         raw = str(raw_account).strip()
@@ -1200,7 +1213,7 @@ class PITCBillScraper:
                 "scrape_status": "Bill Not Found",
             }
         try:
-            soup = self.search(account, stop_event=stop_event, log_callback=log_callback)
+            soup = self.search(account, stop_event=stop_event, log_callback=log_callback, pause_event=pause_event)
             out = {
                 "_account": account,
                 "BNo": bno,
@@ -1356,7 +1369,7 @@ class PITCBillScraper:
                 "scrape_status": "Bill Not Found",
             }
 
-    def update_workbook(self, path, progress=None, stop_event=None, log_callback=None):
+    def update_workbook(self, path, progress=None, stop_event=None, log_callback=None, pause_event=None):
         if path.suffix.lower() not in SUPPORTED_EXTENSIONS:
             raise RuntimeError("Please select an .xlsx or .ods workbook. The selected workbook is updated in place.")
         workbook = load_spreadsheet(path)
@@ -1436,6 +1449,12 @@ class PITCBillScraper:
             for done, record in enumerate(row_records, 1):
                 if stop_event and stop_event.is_set():
                     break
+                while pause_event and not pause_event.is_set():
+                    if stop_event and stop_event.is_set():
+                        break
+                    time.sleep(0.2)
+                if stop_event and stop_event.is_set():
+                    break
                 account = record.get("AC No.")
                 existing_status = record.get("status")
                 try:
@@ -1445,6 +1464,7 @@ class PITCBillScraper:
                         stop_event=stop_event,
                         log_callback=log_callback,
                         history_mode=self.history_mode,
+                        pause_event=pause_event,
                     )
                 except InterruptedError:
                     break
@@ -1506,6 +1526,10 @@ class PITCBillScraper:
                 while slept < self.delay:
                     if stop_event and stop_event.is_set():
                         break
+                    while pause_event and not pause_event.is_set():
+                        if stop_event and stop_event.is_set():
+                            break
+                        time.sleep(0.2)
                     time.sleep(delay_step)
                     slept += delay_step
         finally:
@@ -2887,7 +2911,7 @@ class AboutDialog(tk.Toplevel):
         except Exception:
             pass
 
-        w, h = 450, 420
+        w, h = 460, 440
         px = parent.winfo_rootx() + (parent.winfo_width() // 2) - (w // 2)
         py = parent.winfo_rooty() + (parent.winfo_height() // 2) - (h // 2)
         self.geometry(f"{w}x{h}+{max(0, px)}+{max(0, py)}")
@@ -2899,7 +2923,10 @@ class AboutDialog(tk.Toplevel):
         app_title.pack(anchor="w")
 
         app_ver = ttk.Label(container, text=f"Version {APP_VERSION}", style="Sub.TLabel")
-        app_ver.pack(anchor="w", pady=(2, 8))
+        app_ver.pack(anchor="w", pady=(2, 2))
+
+        app_desc = ttk.Label(container, text="Downloads consumers information/Billing data into Excel", style="Muted.TLabel")
+        app_desc.pack(anchor="w", pady=(0, 8))
 
         # 1. License Information Card
         lic = getattr(parent, "active_license", None) or load_local_license()
@@ -3009,7 +3036,24 @@ class AboutDialog(tk.Toplevel):
         contact_lbl.pack(anchor="w")
 
         btn_box = ttk.Frame(container, style="Root.TFrame")
-        btn_box.pack(fill="x")
+        btn_box.pack(fill="x", pady=(4, 0))
+
+        self.check_update_btn = tk.Button(
+            btn_box,
+            text="🔄  Check for Updates",
+            command=self._check_updates,
+            bg=BTN_SEC_BG,
+            fg=TEXT_WHITE,
+            activebackground=BTN_SEC_HOVER,
+            activeforeground=TEXT_WHITE,
+            font=(UI_FONT, 8, "bold"),
+            relief="flat",
+            cursor="hand2",
+            padx=10,
+            pady=3,
+            bd=0,
+        )
+        self.check_update_btn.pack(side="left")
 
         close_btn = ttk.Button(btn_box, text="Close", command=self.destroy)
         close_btn.pack(side="right")
@@ -3019,6 +3063,38 @@ class AboutDialog(tk.Toplevel):
         self.update_idletasks()
         self.deiconify()
         self.grab_set()
+
+    def _check_updates(self):
+        self.check_update_btn.configure(text="Checking...", state="disabled")
+        threading.Thread(target=self._run_update_check, daemon=True).start()
+
+    def _run_update_check(self):
+        try:
+            info = check_for_updates(APP_VERSION)
+            if info:
+                self.after(0, lambda: self._on_update_found(info))
+            else:
+                self.after(0, self._on_no_update)
+        except Exception as exc:
+            self.after(0, lambda: self._on_update_error(str(exc)))
+
+    def _on_update_found(self, info: UpdateInfo):
+        if self.winfo_exists():
+            self.check_update_btn.configure(text="🔄  Check for Updates", state="normal")
+            parent = self.parent
+            self.destroy()
+            parent.show_update_banner(info)
+            parent.install_update()
+
+    def _on_no_update(self):
+        if self.winfo_exists():
+            self.check_update_btn.configure(text="🔄  Check for Updates", state="normal")
+            messagebox.showinfo("Update Check", f"You are on the latest version of Bill Scrapper (v{APP_VERSION}).", parent=self)
+
+    def _on_update_error(self, err_msg: str):
+        if self.winfo_exists():
+            self.check_update_btn.configure(text="🔄  Check for Updates", state="normal")
+            messagebox.showwarning("Update Check", f"Could not check for updates:\n{err_msg}", parent=self)
 
     def _copy_serial_key(self):
         lic = getattr(self.master, "active_license", None) or load_local_license()
@@ -3175,6 +3251,11 @@ class BillScraperApp(tk.Tk):
 
         self.events = queue.Queue()
         self.stop_event = threading.Event()
+        self.pause_event = threading.Event()
+        self.pause_event.set()
+        self.is_paused = False
+        self.pause_button: tk.Button | None = None
+        self.about_btn: tk.Button | None = None
         self.input_var = tk.StringVar()
         config = load_app_config()
         self.url_var = tk.StringVar(value=config.get("bills_url", URL))
@@ -3315,15 +3396,9 @@ class BillScraperApp(tk.Tk):
         ver_box = ttk.Frame(header_top, style="Root.TFrame")
         ver_box.pack(side="right", anchor="e")
 
-        ttk.Label(ver_box, text=f"v{APP_VERSION}", style="Sub.TLabel").pack(side="left", padx=(0, 8))
-        self.check_update_btn = tk.Button(
-            ver_box, text="Check for Updates", command=self.manual_update_check,
-            bg=BTN_SEC_BG, fg=TEXT_MAIN, activebackground=BTN_SEC_HOVER, activeforeground="white",
-            font=(UI_FONT, 8), relief="flat", padx=8, pady=2, cursor="hand2", bd=0
-        )
-        self.check_update_btn.pack(side="left")
+        ttk.Label(ver_box, text=f"v{APP_VERSION}", style="Sub.TLabel").pack(side="right")
 
-        sub_lbl = ttk.Label(header_frame, text="Automated Bill Scraping", style="Sub.TLabel")
+        sub_lbl = ttk.Label(header_frame, text="Downloads consumers information/Billing data into Excel", style="Sub.TLabel")
         sub_lbl.pack(anchor="w", pady=(2, 0))
 
         # Notification banner for available updates (hidden by default)
@@ -3364,8 +3439,18 @@ class BillScraperApp(tk.Tk):
         entry = ttk.Entry(self.files_frame, textvariable=self.input_var, font=(UI_FONT, 9))
         entry.grid(row=0, column=1, sticky="ew", padx=(8, 8), pady=4)
 
-        browse_btn = ttk.Button(self.files_frame, text="Browse...", command=self.choose_input)
-        browse_btn.grid(row=0, column=2, pady=4)
+        wb_btn_box = ttk.Frame(self.files_frame, style="Card.TFrame")
+        wb_btn_box.grid(row=0, column=2, sticky="w", pady=4)
+
+        browse_btn = ttk.Button(wb_btn_box, text="Browse...", command=self.choose_input)
+        browse_btn.pack(side="left", padx=(0, 6))
+
+        template_btn = tk.Button(
+            wb_btn_box, text="Template", command=self.download_template,
+            bg="#0e639c", fg="white", activebackground="#1177bb", activeforeground="white",
+            font=(UI_FONT, 9, "bold"), relief="flat", padx=10, pady=3, cursor="hand2", bd=0
+        )
+        template_btn.pack(side="left")
 
         ttk.Label(self.files_frame, text="Bills URL:", font=(UI_FONT, 9, "bold")).grid(row=1, column=0, sticky="w", pady=4)
         self.url_entry = ttk.Entry(self.files_frame, textvariable=self.url_var, font=(UI_FONT, 9), state="readonly")
@@ -3373,7 +3458,7 @@ class BillScraperApp(tk.Tk):
         self.url_entry.bind("<Return>", lambda e: self.toggle_url() if self.url_btn and self.url_btn.cget("text") == "Save" else None)
 
         self.url_btn = ttk.Button(self.files_frame, text="Edit", command=self.toggle_url)
-        self.url_btn.grid(row=1, column=2, pady=4)
+        self.url_btn.grid(row=1, column=2, sticky="w", pady=4)
 
         self.files_frame.columnconfigure(1, weight=1)
 
@@ -3420,14 +3505,48 @@ class BillScraperApp(tk.Tk):
         ttk.Label(stats_box, text="Errors:", style="StatTitle.TLabel").grid(row=0, column=4, sticky="w", padx=4)
         ttk.Label(stats_box, textvariable=self.err_var, style="StatErr.TLabel").grid(row=0, column=5, sticky="w", padx=4)
 
+        # Action Bar: Start Scraping, Pause, Stop, and About
+        action_bar = ttk.Frame(root, style="Root.TFrame")
+        action_bar.pack(fill="x", pady=(0, 10))
+
+        self.start_button = tk.Button(
+            action_bar, text="▶  Start Scraping", command=self.start,
+            bg=ACCENT_GREEN, fg="white", activebackground=ACCENT_GREEN_HOVER, activeforeground="white",
+            font=(UI_FONT, 10, "bold"), relief="flat", padx=16, pady=5, cursor="hand2", bd=0
+        )
+        self.start_button.pack(side="left")
+
+        self.pause_button = tk.Button(
+            action_bar, text="⏸  Pause", command=self.toggle_pause,
+            bg=BTN_DISABLED_BG, fg="white", activebackground=BTN_SEC_HOVER, activeforeground="white",
+            font=(UI_FONT, 10, "bold"), relief="flat", padx=14, pady=5, state="disabled", cursor="hand2", bd=0,
+            disabledforeground=BTN_DISABLED_FG
+        )
+        self.pause_button.pack(side="left", padx=(10, 0))
+
+        self.cancel_button = tk.Button(
+            action_bar, text="⏹  Stop", command=self.cancel,
+            bg=BTN_DISABLED_BG, fg="white", activebackground=ACCENT_RED_HOVER, activeforeground="white",
+            font=(UI_FONT, 10, "bold"), relief="flat", padx=14, pady=5, state="disabled", cursor="hand2", bd=0,
+            disabledforeground=BTN_DISABLED_FG
+        )
+        self.cancel_button.pack(side="left", padx=(10, 0))
+
+        self.about_btn = tk.Button(
+            action_bar, text="About", command=self.show_about,
+            bg="#e67e22", fg="white", activebackground="#d35400", activeforeground="white",
+            font=(UI_FONT, 9, "bold"), relief="flat", padx=14, pady=5, cursor="hand2", bd=0
+        )
+        self.about_btn.pack(side="right")
+
         self.progress = ttk.Progressbar(root, mode="determinate", style="Green.Horizontal.TProgressbar")
-        self.progress.pack(fill="x", pady=(4, 6))
+        self.progress.pack(fill="x", pady=(0, 6))
 
         status_lbl = ttk.Label(root, textvariable=self.status_var, style="Status.TLabel")
         status_lbl.pack(anchor="w", pady=(0, 6))
 
         log_frame = ttk.LabelFrame(root, text=" Live Execution Log ", padding=6)
-        log_frame.pack(fill="both", expand=True, pady=(0, 10))
+        log_frame.pack(fill="both", expand=True)
 
         self.log = tk.Text(
             log_frame, height=10, state="disabled", wrap="word",
@@ -3445,29 +3564,70 @@ class BillScraperApp(tk.Tk):
         self.log.pack(side="left", fill="both", expand=True)
         scroll.pack(side="right", fill="y")
 
-        btn_bar = ttk.Frame(root, style="Root.TFrame")
-        btn_bar.pack(fill="x")
+    def download_template(self):
+        downloads_dir = Path.home() / "Downloads"
+        if not downloads_dir.exists():
+            downloads_dir = Path.cwd()
 
-        self.start_button = tk.Button(
-            btn_bar, text="▶  Start Scraping", command=self.start,
-            bg=ACCENT_GREEN, fg="white", activebackground=ACCENT_GREEN_HOVER, activeforeground="white",
-            font=(UI_FONT, 10, "bold"), relief="flat", padx=16, pady=5, cursor="hand2", bd=0
+        save_path = filedialog.asksaveasfilename(
+            parent=self,
+            title="Save Excel Template",
+            initialdir=str(downloads_dir),
+            initialfile="BillScrapper_Template.xlsx",
+            defaultextension=".xlsx",
+            filetypes=[("Excel Workbook", "*.xlsx")],
         )
-        self.start_button.pack(side="left")
+        if not save_path:
+            return
 
-        self.cancel_button = tk.Button(
-            btn_bar, text="⏹  Stop", command=self.cancel,
-            bg=BTN_DISABLED_BG, fg="white", activebackground=ACCENT_RED_HOVER, activeforeground="white",
-            font=(UI_FONT, 10, "bold"), relief="flat", padx=14, pady=5, state="disabled", cursor="hand2", bd=0,
-            disabledforeground=BTN_DISABLED_FG
-        )
-        self.cancel_button.pack(side="left", padx=(10, 0))
+        try:
+            wb = openpyxl.Workbook()
+            ws = wb.active
+            ws.title = "AC Numbers"
+            ws.column_dimensions["A"].width = 25
+            ws.column_dimensions["A"].number_format = "@"
 
-        self.about_btn = ttk.Button(btn_bar, text="About", command=self.show_about)
-        self.about_btn.pack(side="right")
+            # Pre-format cells in Column A as text so added numbers preserve leading zeros
+            for r in range(1, 101):
+                ws.cell(row=r, column=1).number_format = "@"
 
-        self.open_btn = ttk.Button(btn_bar, text="Open File Folder", command=self.open_output_folder)
-        self.open_btn.pack(side="right", padx=(0, 8))
+            h_cell = ws.cell(row=1, column=1, value="AC No.")
+            h_cell.data_type = "s"
+            h_cell.number_format = "@"
+
+            d_cell = ws.cell(row=2, column=1, value="01269330903300")
+            d_cell.data_type = "s"
+            d_cell.number_format = "@"
+
+            wb.save(save_path)
+            self.write_log(f"Template downloaded successfully: {Path(save_path).name}", "ok")
+
+            res = messagebox.askyesno(
+                "Template Saved",
+                f"Excel template saved successfully to:\n\n{save_path}\n\nWould you like to select it as your Target Workbook now?",
+                parent=self,
+            )
+            if res:
+                self.input_var.set(save_path)
+                self.status_var.set(f"Selected: {Path(save_path).name}")
+        except Exception as exc:
+            messagebox.showerror("Error Saving Template", f"Failed to save template:\n{exc}", parent=self)
+
+    def toggle_pause(self):
+        if not hasattr(self, "pause_event") or not self.pause_button:
+            return
+        if self.is_paused:
+            self.is_paused = False
+            self.pause_event.set()
+            self.pause_button.configure(text="⏸  Pause", bg=BTN_SEC_BG, activebackground=BTN_SEC_HOVER, fg="white")
+            self.status_var.set("Resumed scraping...")
+            self.write_log("▶ Scraping resumed.", "info")
+        else:
+            self.is_paused = True
+            self.pause_event.clear()
+            self.pause_button.configure(text="▶  Resume", bg="#d7ba7d", activebackground="#c5a869", fg="#1e1e1e")
+            self.status_var.set("Scraping paused. Click Resume to continue.")
+            self.write_log("⏸ Scraping paused.", "info")
 
     def choose_input(self):
         path = filedialog.askopenfilename(
@@ -3548,6 +3708,8 @@ class BillScraperApp(tk.Tk):
             history_mode = "6mo"
 
         self.stop_event.clear()
+        self.pause_event.set()
+        self.is_paused = False
         self.progress.configure(value=0)
         self.success_count = 0
         self.error_count = 0
@@ -3556,6 +3718,8 @@ class BillScraperApp(tk.Tk):
         self.total_var.set("0")
 
         self.start_button.configure(state="disabled", bg=BTN_DISABLED_BG)
+        if self.pause_button:
+            self.pause_button.configure(state="normal", text="⏸  Pause", bg=BTN_SEC_BG, activebackground=BTN_SEC_HOVER, fg="white")
         self.cancel_button.configure(state="normal", bg=ACCENT_RED)
         if self.chk_history_1yr:
             self.chk_history_1yr.configure(state="disabled")
@@ -3591,14 +3755,21 @@ class BillScraperApp(tk.Tk):
             def log_callback(msg):
                 self.events.put(("log", msg))
 
-            PITCBillScraper(delay=delay, history_mode=history_mode, url=url).update_workbook(path, progress, self.stop_event, log_callback=log_callback)
+            PITCBillScraper(delay=delay, history_mode=history_mode, url=url).update_workbook(
+                path, progress, self.stop_event, log_callback=log_callback, pause_event=self.pause_event
+            )
             self.events.put(("done", str(path), self.stop_event.is_set()))
         except Exception as exc:
             self.events.put(("error", str(exc)))
 
     def cancel(self):
         self.stop_event.set()
+        if hasattr(self, "pause_event"):
+            self.pause_event.set()
+        self.is_paused = False
         self.status_var.set("Stopping... Saving all processed records...")
+        if self.pause_button:
+            self.pause_button.configure(text="⏸  Pause", state="disabled", bg=BTN_DISABLED_BG, fg="white")
         self.cancel_button.configure(state="disabled", bg=BTN_DISABLED_BG)
         self.write_log("⏹ Stop requested. Saving all progress processed so far...", "err")
 
@@ -3619,7 +3790,7 @@ class BillScraperApp(tk.Tk):
     def install_update(self):
         if not self.latest_update:
             return
-        if self.cancel_button["state"] == "normal":
+        if self.cancel_button["state"] == "normal" or getattr(self, "is_paused", False):
             messagebox.showwarning(
                 "Task Running",
                 "Please stop or wait for the current scraping process to complete before updating.",
@@ -3670,7 +3841,11 @@ class BillScraperApp(tk.Tk):
 
                 elif event[0] == "done":
                     _, path, cancelled = event
+                    self.is_paused = False
+                    self.pause_event.set()
                     self.start_button.configure(state="normal", bg=ACCENT_GREEN)
+                    if self.pause_button:
+                        self.pause_button.configure(text="⏸  Pause", state="disabled", bg=BTN_DISABLED_BG, fg="white")
                     self.cancel_button.configure(state="disabled", bg=BTN_DISABLED_BG)
                     if self.chk_history_1yr:
                         self.chk_history_1yr.configure(state="normal")
@@ -3699,7 +3874,11 @@ class BillScraperApp(tk.Tk):
                             )
 
                 elif event[0] == "error":
+                    self.is_paused = False
+                    self.pause_event.set()
                     self.start_button.configure(state="normal", bg=ACCENT_GREEN)
+                    if self.pause_button:
+                        self.pause_button.configure(text="⏸  Pause", state="disabled", bg=BTN_DISABLED_BG, fg="white")
                     self.cancel_button.configure(state="disabled", bg=BTN_DISABLED_BG)
                     if self.chk_history_1yr:
                         self.chk_history_1yr.configure(state="normal")

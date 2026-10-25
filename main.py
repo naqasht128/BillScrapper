@@ -3385,7 +3385,7 @@ class BillScraperApp(tk.Tk):
         title_lbl.pack(side="left")
 
         self.about_btn = tk.Button(
-            header_top, text="About", command=self.show_about,
+            header_top, text="ⓘ  About", command=self.show_about,
             bg="#e67e22", fg="white", activebackground="#d35400", activeforeground="white",
             font=(UI_FONT, 9, "bold"), relief="flat", padx=14, pady=3, cursor="hand2", bd=0
         )

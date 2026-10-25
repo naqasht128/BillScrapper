@@ -402,9 +402,23 @@ app.get('/api/updates/latest', async (req, res) => {
           const tag = (data.tag_name || '').replace(/^v/, '');
           const assets = data.assets || [];
 
-          // Prefer Setup Installer first, then fallback to portable .exe
-          const setupAsset = assets.find(a => a.name.toLowerCase().includes('setup') && a.name.toLowerCase().endsWith('.exe'))
-            || assets.find(a => a.name.toLowerCase().endsWith('.exe'));
+          // Check if request is from Windows 7 (via query param ?os=win7 or User-Agent)
+          const isWin7 = (req.query.os || '').toLowerCase() === 'win7' || (req.headers['user-agent'] || '').toLowerCase().includes('windows nt 6.1');
+
+          let setupAsset;
+          if (isWin7) {
+            setupAsset = assets.find(a => a.name.toLowerCase().includes('win7') && a.name.toLowerCase().includes('setup') && a.name.toLowerCase().endsWith('.exe'))
+              || assets.find(a => a.name.toLowerCase().includes('win7') && a.name.toLowerCase().endsWith('.exe'));
+          } else {
+            setupAsset = assets.find(a => !a.name.toLowerCase().includes('win7') && a.name.toLowerCase().includes('setup') && a.name.toLowerCase().endsWith('.exe'))
+              || assets.find(a => !a.name.toLowerCase().includes('win7') && a.name.toLowerCase().endsWith('.exe'));
+          }
+
+          // Fallback to any exe if exact match not found
+          if (!setupAsset) {
+            setupAsset = assets.find(a => a.name.toLowerCase().includes('setup') && a.name.toLowerCase().endsWith('.exe'))
+              || assets.find(a => a.name.toLowerCase().endsWith('.exe'));
+          }
 
           if (setupAsset) {
             const host = req.get('host');

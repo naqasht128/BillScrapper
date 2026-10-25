@@ -1,1 +1,1 @@
-• Add custom Bills URL with persistent configuration defaulting to https://bill.pitc.com.pk/pescobill
+• Added native Windows 7 compatibility installer with automatic VC++ runtime integration

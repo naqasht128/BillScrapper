@@ -1616,7 +1616,7 @@ LOG_BG = "#1e1e1e"             # Same as IDE code editor canvas
 LOG_FG = "#d4d4d4"             # Clean readable terminal text
 
 # Version & Secure License/Update server endpoint (keeps GitHub repo 100% private)
-APP_VERSION = "1.3.3"
+APP_VERSION = "1.3.4"
 UPDATE_API_URL = f"{LICENSE_API_URL}/api/updates/latest"
 
 
@@ -1649,7 +1649,15 @@ def check_for_updates(current_version: str = APP_VERSION) -> UpdateInfo | None:
             "User-Agent": "BillScrapper-DesktopApp",
             "Accept": "application/json",
         }
-        resp = requests.get(UPDATE_API_URL, headers=headers, timeout=8)
+        params = {}
+        if sys.platform == "win32":
+            try:
+                winver = sys.getwindowsversion()
+                if winver.major == 6 and winver.minor == 1:
+                    params["os"] = "win7"
+            except Exception:
+                pass
+        resp = requests.get(UPDATE_API_URL, headers=headers, params=params, timeout=8)
         if resp.status_code != 200:
             return None
         data = resp.json()

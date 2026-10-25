@@ -51,4 +51,6 @@ generate_key.spec
 
 # Admin Key Generator & Licensing Tools
 generate_key.py
+keys.py
+/keys.py
 BLUEPRINT.md

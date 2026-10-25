@@ -1,1 +1,1 @@
-• UI revamp: Relocate action buttons with Pause support, move update check to About dialog, add Excel template generator, align URL entry, and relocate orange About button to top right
+• Refactor control bar to 2-button dynamic morphing toggle (Start/Pause/Resume) and separate Stop button

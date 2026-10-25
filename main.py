@@ -1640,7 +1640,7 @@ LOG_BG = "#1e1e1e"             # Same as IDE code editor canvas
 LOG_FG = "#d4d4d4"             # Clean readable terminal text
 
 # Version & Secure License/Update server endpoint (keeps GitHub repo 100% private)
-APP_VERSION = "1.3.5"
+APP_VERSION = "1.3.6"
 UPDATE_API_URL = f"{LICENSE_API_URL}/api/updates/latest"
 
 
@@ -3244,8 +3244,8 @@ class BillScraperApp(tk.Tk):
         self.stop_event = threading.Event()
         self.pause_event = threading.Event()
         self.pause_event.set()
+        self.is_running = False
         self.is_paused = False
-        self.pause_button: tk.Button | None = None
         self.about_btn: tk.Button | None = None
         self.input_var = tk.StringVar()
         config = load_app_config()
@@ -3495,24 +3495,16 @@ class BillScraperApp(tk.Tk):
         ttk.Label(stats_box, text="Errors:", style="StatTitle.TLabel").grid(row=0, column=4, sticky="w", padx=4)
         ttk.Label(stats_box, textvariable=self.err_var, style="StatErr.TLabel").grid(row=0, column=5, sticky="w", padx=4)
 
-        # Action Bar: Start Scraping, Pause, Stop, and About
+        # Action Bar: Start/Pause/Resume toggle button and Stop button
         action_bar = ttk.Frame(root, style="Root.TFrame")
         action_bar.pack(fill="x", pady=(0, 10))
 
         self.start_button = tk.Button(
-            action_bar, text="▶  Start Scraping", command=self.start,
+            action_bar, text="▶  Start Scraping", command=self.on_start_pause_clicked,
             bg=ACCENT_GREEN, fg="white", activebackground=ACCENT_GREEN_HOVER, activeforeground="white",
             font=(UI_FONT, 10, "bold"), relief="flat", padx=16, pady=5, cursor="hand2", bd=0
         )
         self.start_button.pack(side="left")
-
-        self.pause_button = tk.Button(
-            action_bar, text="⏸  Pause", command=self.toggle_pause,
-            bg=BTN_DISABLED_BG, fg="white", activebackground=BTN_SEC_HOVER, activeforeground="white",
-            font=(UI_FONT, 10, "bold"), relief="flat", padx=14, pady=5, state="disabled", cursor="hand2", bd=0,
-            disabledforeground=BTN_DISABLED_FG
-        )
-        self.pause_button.pack(side="left", padx=(10, 0))
 
         self.cancel_button = tk.Button(
             action_bar, text="⏹  Stop", command=self.cancel,
@@ -3596,19 +3588,25 @@ class BillScraperApp(tk.Tk):
         except Exception as exc:
             messagebox.showerror("Error Saving Template", f"Failed to save template:\n{exc}", parent=self)
 
+    def on_start_pause_clicked(self):
+        if not getattr(self, "is_running", False):
+            self.start()
+        else:
+            self.toggle_pause()
+
     def toggle_pause(self):
-        if not hasattr(self, "pause_event") or not self.pause_button:
+        if not hasattr(self, "pause_event") or not self.start_button:
             return
         if self.is_paused:
             self.is_paused = False
             self.pause_event.set()
-            self.pause_button.configure(text="⏸  Pause", bg=BTN_SEC_BG, activebackground=BTN_SEC_HOVER, fg="white")
+            self.start_button.configure(text="⏸  Pause", bg="#d7ba7d", activebackground="#c5a869", fg="#1e1e1e")
             self.status_var.set("Resumed scraping...")
             self.write_log("▶ Scraping resumed.", "info")
         else:
             self.is_paused = True
             self.pause_event.clear()
-            self.pause_button.configure(text="▶  Resume", bg="#d7ba7d", activebackground="#c5a869", fg="#1e1e1e")
+            self.start_button.configure(text="▶  Resume", bg=ACCENT_GREEN, activebackground=ACCENT_GREEN_HOVER, fg="white")
             self.status_var.set("Scraping paused. Click Resume to continue.")
             self.write_log("⏸ Scraping paused.", "info")
 
@@ -3692,6 +3690,7 @@ class BillScraperApp(tk.Tk):
 
         self.stop_event.clear()
         self.pause_event.set()
+        self.is_running = True
         self.is_paused = False
         self.progress.configure(value=0)
         self.success_count = 0
@@ -3700,9 +3699,7 @@ class BillScraperApp(tk.Tk):
         self.err_var.set("0")
         self.total_var.set("0")
 
-        self.start_button.configure(state="disabled", bg=BTN_DISABLED_BG)
-        if self.pause_button:
-            self.pause_button.configure(state="normal", text="⏸  Pause", bg=BTN_SEC_BG, activebackground=BTN_SEC_HOVER, fg="white")
+        self.start_button.configure(text="⏸  Pause", bg="#d7ba7d", activebackground="#c5a869", fg="#1e1e1e", state="normal")
         self.cancel_button.configure(state="normal", bg=ACCENT_RED)
         if self.chk_history_1yr:
             self.chk_history_1yr.configure(state="disabled")
@@ -3749,10 +3746,10 @@ class BillScraperApp(tk.Tk):
         self.stop_event.set()
         if hasattr(self, "pause_event"):
             self.pause_event.set()
+        self.is_running = False
         self.is_paused = False
         self.status_var.set("Stopping... Saving all processed records...")
-        if self.pause_button:
-            self.pause_button.configure(text="⏸  Pause", state="disabled", bg=BTN_DISABLED_BG, fg="white")
+        self.start_button.configure(text="▶  Start Scraping", state="disabled", bg=BTN_DISABLED_BG, fg="white")
         self.cancel_button.configure(state="disabled", bg=BTN_DISABLED_BG)
         self.write_log("⏹ Stop requested. Saving all progress processed so far...", "err")
 
@@ -3773,7 +3770,7 @@ class BillScraperApp(tk.Tk):
     def install_update(self):
         if not self.latest_update:
             return
-        if self.cancel_button["state"] == "normal" or getattr(self, "is_paused", False):
+        if self.cancel_button["state"] == "normal" or getattr(self, "is_paused", False) or getattr(self, "is_running", False):
             messagebox.showwarning(
                 "Task Running",
                 "Please stop or wait for the current scraping process to complete before updating.",
@@ -3824,11 +3821,10 @@ class BillScraperApp(tk.Tk):
 
                 elif event[0] == "done":
                     _, path, cancelled = event
+                    self.is_running = False
                     self.is_paused = False
                     self.pause_event.set()
-                    self.start_button.configure(state="normal", bg=ACCENT_GREEN)
-                    if self.pause_button:
-                        self.pause_button.configure(text="⏸  Pause", state="disabled", bg=BTN_DISABLED_BG, fg="white")
+                    self.start_button.configure(text="▶  Start Scraping", state="normal", bg=ACCENT_GREEN, activebackground=ACCENT_GREEN_HOVER, fg="white")
                     self.cancel_button.configure(state="disabled", bg=BTN_DISABLED_BG)
                     if self.chk_history_1yr:
                         self.chk_history_1yr.configure(state="normal")
@@ -3857,11 +3853,10 @@ class BillScraperApp(tk.Tk):
                             )
 
                 elif event[0] == "error":
+                    self.is_running = False
                     self.is_paused = False
                     self.pause_event.set()
-                    self.start_button.configure(state="normal", bg=ACCENT_GREEN)
-                    if self.pause_button:
-                        self.pause_button.configure(text="⏸  Pause", state="disabled", bg=BTN_DISABLED_BG, fg="white")
+                    self.start_button.configure(text="▶  Start Scraping", state="normal", bg=ACCENT_GREEN, activebackground=ACCENT_GREEN_HOVER, fg="white")
                     self.cancel_button.configure(state="disabled", bg=BTN_DISABLED_BG)
                     if self.chk_history_1yr:
                         self.chk_history_1yr.configure(state="normal")

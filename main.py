@@ -3384,6 +3384,13 @@ class BillScraperApp(tk.Tk):
         title_lbl = ttk.Label(header_top, text="Bill Scrapper", style="Title.TLabel")
         title_lbl.pack(side="left")
 
+        self.about_btn = tk.Button(
+            header_top, text="About", command=self.show_about,
+            bg="#e67e22", fg="white", activebackground="#d35400", activeforeground="white",
+            font=(UI_FONT, 9, "bold"), relief="flat", padx=14, pady=3, cursor="hand2", bd=0
+        )
+        self.about_btn.pack(side="right")
+
         sub_lbl = ttk.Label(header_frame, text="Downloads consumers information/Billing data into Excel", style="Sub.TLabel")
         sub_lbl.pack(anchor="w", pady=(2, 0))
 
@@ -3514,13 +3521,6 @@ class BillScraperApp(tk.Tk):
             disabledforeground=BTN_DISABLED_FG
         )
         self.cancel_button.pack(side="left", padx=(10, 0))
-
-        self.about_btn = tk.Button(
-            action_bar, text="About", command=self.show_about,
-            bg="#e67e22", fg="white", activebackground="#d35400", activeforeground="white",
-            font=(UI_FONT, 9, "bold"), relief="flat", padx=14, pady=5, cursor="hand2", bd=0
-        )
-        self.about_btn.pack(side="right")
 
         self.progress = ttk.Progressbar(root, mode="determinate", style="Green.Horizontal.TProgressbar")
         self.progress.pack(fill="x", pady=(0, 6))

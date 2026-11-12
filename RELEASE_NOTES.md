@@ -1,1 +1,1 @@
-• Refactor control bar to 2-button dynamic morphing toggle (Start/Pause/Resume) and separate Stop button
+• Remove hardcoded pricing from UI

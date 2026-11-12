@@ -1640,7 +1640,7 @@ LOG_BG = "#1e1e1e"             # Same as IDE code editor canvas
 LOG_FG = "#d4d4d4"             # Clean readable terminal text
 
 # Version & Secure License/Update server endpoint (keeps GitHub repo 100% private)
-APP_VERSION = "1.3.6"
+APP_VERSION = "1.3.7"
 UPDATE_API_URL = f"{LICENSE_API_URL}/api/updates/latest"
 
 
@@ -2652,7 +2652,7 @@ class LicenseGateDialog(tk.Toplevel):
         ttk.Label(help_row, text="Don't have a serial key?", style="Sub.TLabel").pack(side="left")
         buy_link = tk.Button(
             help_row,
-            text="View Subscription Plans & Buy →",
+            text="Need a license key? Buy & Inquire →",
             bg=BG_DARK,
             fg="#58a6ff",
             activebackground=BG_DARK,
@@ -2666,26 +2666,26 @@ class LicenseGateDialog(tk.Toplevel):
         buy_link.pack(side="left", padx=(6, 0))
 
     def _build_buy_tab(self):
-        # 1. Subscription Plans Card
-        plans_card = ttk.Frame(self.tab_buy, style="Card.TFrame", padding=(16, 12))
-        plans_card.pack(fill="x", pady=(0, 10))
+        # 1. Official Pricing on Website Card
+        web_card = ttk.Frame(self.tab_buy, style="Card.TFrame", padding=(16, 12))
+        web_card.pack(fill="x", pady=(0, 10))
 
-        ttk.Label(plans_card, text="SUBSCRIPTION PLANS & PRICING", style="CardTitle.TLabel", font=(UI_FONT, 9, "bold")).pack(anchor="w", pady=(0, 8))
+        ttk.Label(web_card, text="OFFICIAL SUBSCRIPTION & PRICING", style="CardTitle.TLabel", font=(UI_FONT, 9, "bold")).pack(anchor="w", pady=(0, 4))
+        ttk.Label(web_card, text="View official, up-to-date subscription tiers and feature details directly on our website.", style="Sub.TLabel", font=(UI_FONT, 8)).pack(anchor="w", pady=(0, 8))
 
-        plans_data = [
-            ("1 Month", "Rs. 300", "1 Device", "#89d185"),
-            ("3 Months", "Rs. 700", "Up to 2 Devices", "#79c0ff"),
-            ("6 Months", "Rs. 1,200", "Up to 2 Devices", "#d2a8ff"),
-            ("1 Year", "Rs. 2,000", "Up to 2 Devices", "#ffa657"),
-        ]
-
-        for plan_name, price, devices, pill_color in plans_data:
-            p_row = tk.Frame(plans_card, bg=INPUT_BG, padx=10, pady=6, highlightthickness=1, highlightbackground=BORDER_COLOR)
-            p_row.pack(fill="x", pady=2)
-
-            tk.Label(p_row, text=plan_name, font=(UI_FONT, 9, "bold"), fg=TEXT_WHITE, bg=INPUT_BG).pack(side="left")
-            tk.Label(p_row, text=f"•  {devices}", font=(UI_FONT, 8), fg=TEXT_MUTED, bg=INPUT_BG).pack(side="left", padx=(8, 0))
-            tk.Label(p_row, text=price, font=(UI_FONT, 9, "bold"), fg=pill_color, bg=INPUT_BG).pack(side="right")
+        tk.Button(
+            web_card,
+            text="🌐  View Live Plans & Pricing on Official Website",
+            bg=BTN_SEC_BG,
+            fg=TEXT_WHITE,
+            activebackground=BTN_SEC_HOVER,
+            activeforeground=TEXT_WHITE,
+            font=(UI_FONT, 9, "bold"),
+            relief="flat",
+            cursor="hand2",
+            pady=6,
+            command=lambda: webbrowser.open("https://pit-csuite.vercel.app/details.html?tool=bill-scrapper"),
+        ).pack(fill="x")
 
         # 2. Contact for Purchase Card
         contact_card = ttk.Frame(self.tab_buy, style="Card.TFrame", padding=(16, 12))

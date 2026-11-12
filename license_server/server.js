@@ -34,9 +34,9 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
 // Plan mapping configurations
 const PLAN_CONFIG = {
   '1_month': { duration_days: 30, max_devices: 1, label: '1 Month' },
-  '3_months': { duration_days: 90, max_devices: 2, label: '3 Months' },
-  '6_months': { duration_days: 180, max_devices: 2, label: '6 Months' },
-  '1_year': { duration_days: 365, max_devices: 2, label: '1 Year' }
+  '3_months': { duration_days: 90, max_devices: 1, label: '3 Months' },
+  '6_months': { duration_days: 180, max_devices: 1, label: '6 Months' },
+  '1_year': { duration_days: 365, max_devices: 1, label: '1 Year' }
 };
 
 /**
@@ -312,7 +312,8 @@ app.post('/api/admin/generate', async (req, res) => {
       });
     }
 
-    const { duration_days, max_devices, label } = PLAN_CONFIG[plan_type];
+    const { duration_days, max_devices: defaultDevices, label } = PLAN_CONFIG[plan_type];
+    const max_devices = (req.body && req.body.max_devices) ? Number(req.body.max_devices) : defaultDevices;
 
     // 3. Generate unique serial key (retry in the ultra-rare event of collision)
     let serial_key = null;

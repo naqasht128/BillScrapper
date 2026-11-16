@@ -33,6 +33,8 @@ from decimal import Decimal
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
+import urllib.parse
+
 import requests
 from bs4 import BeautifulSoup
 from lxml import etree
@@ -760,7 +762,20 @@ def load_spreadsheet(path: Path):
 
 
 class PITCBillScraper:
-    def __init__(self, delay=2.0, timeout=90, history_mode=None, url=None):
+    _ocr = None
+
+    @classmethod
+    def get_ocr(cls):
+        if cls._ocr is None:
+            try:
+                import ddddocr
+                cls._ocr = ddddocr.DdddOcr(show_ad=False)
+            except Exception as exc:
+                print(f"Warning: Failed to initialize ddddocr: {exc}")
+                cls._ocr = False
+        return cls._ocr if cls._ocr else None
+
+    def __init__(self, delay=3.0, timeout=90, history_mode=None, url=None):
         self.delay = delay
         self.timeout = timeout
         self.history_mode = history_mode
@@ -1184,9 +1199,63 @@ class PITCBillScraper:
             raise RuntimeError("PITC search form was not found")
         payload = {i["name"]: i.get("value", "") for i in form.select("input[type=hidden][name]")}
         payload.update({"rbSearchByList": "refno", "searchTextBox": account, "ruCodeTextBox": "", "btnSearch": "Search"})
-        result = self._fetch_url_with_retry(session, "post", target_url, data=payload, stop_event=stop_event, log_callback=log_callback, pause_event=pause_event)
-        if "CONSUMER DETAIL" not in result.text.upper() and "CONSUMER DETAILS" not in result.text.upper():
-            raise RuntimeError(clean(BeautifulSoup(result.text, "lxml").get_text(" "))[:300] or "No bill returned")
+
+        # Detect and solve CAPTCHA if present
+        captcha_img = form.find("img", id="captchaImage") or form.find("img", src=lambda s: s and "Captcha" in s)
+        has_captcha_input = form.find("input", attrs={"name": "captchaInput"}) or form.find("input", id=lambda s: s and "captcha" in str(s).lower())
+
+        result = None
+        if captcha_img and has_captcha_input:
+            ocr = self.get_ocr()
+            if not ocr:
+                raise RuntimeError("CAPTCHA detected on PITC bill portal, but ddddocr is not installed.")
+
+            max_captcha_attempts = 3
+            for attempt in range(max_captcha_attempts):
+                if stop_event and stop_event.is_set():
+                    raise InterruptedError("Operation stopped by user")
+
+                img_src = captcha_img.get("src", "")
+                img_url = urllib.parse.urljoin(target_url, img_src)
+                img_resp = self._fetch_url_with_retry(session, "get", img_url, stop_event=stop_event, log_callback=log_callback, pause_event=pause_event)
+
+                captcha_code = ocr.classification(img_resp.content).strip()
+                if log_callback:
+                    log_callback(f"[{account}] Solved CAPTCHA: {captcha_code}")
+
+                captcha_field = has_captcha_input.get("name", "captchaInput")
+                payload[captcha_field] = captcha_code
+
+                # Brief pause so server-side ASP.NET session state synchronizes cleanly
+                time.sleep(0.3)
+
+                result = self._fetch_url_with_retry(session, "post", target_url, data=payload, stop_event=stop_event, log_callback=log_callback, pause_event=pause_event)
+
+                if "CONSUMER DETAIL" in result.text.upper() or "CONSUMER DETAILS" in result.text.upper():
+                    return BeautifulSoup(result.text, "lxml")
+
+                # If the portal explicitly reports invalid CAPTCHA, retry with the refreshed CAPTCHA
+                if "invalid captcha" in result.text.lower():
+                    if log_callback:
+                        log_callback(f"[{account}] CAPTCHA verification retrying (attempt {attempt + 1}/{max_captcha_attempts})...")
+                    res_soup = BeautifulSoup(result.text, "lxml")
+                    next_form = res_soup.select_one("form#SubmitForm") or res_soup.find("form")
+                    if next_form:
+                        form = next_form
+                        payload = {i["name"]: i.get("value", "") for i in form.select("input[type=hidden][name]")}
+                        payload.update({"rbSearchByList": "refno", "searchTextBox": account, "ruCodeTextBox": "", "btnSearch": "Search"})
+                        captcha_img = form.find("img", id="captchaImage") or form.find("img", src=lambda s: s and "Captcha" in s)
+                        has_captcha_input = form.find("input", attrs={"name": "captchaInput"}) or form.find("input", id=lambda s: s and "captcha" in str(s).lower())
+                        continue
+
+                # For non-captcha outcomes (e.g. invalid reference no / bill not found), do not retry
+                break
+        else:
+            result = self._fetch_url_with_retry(session, "post", target_url, data=payload, stop_event=stop_event, log_callback=log_callback, pause_event=pause_event)
+
+        if not result or ("CONSUMER DETAIL" not in result.text.upper() and "CONSUMER DETAILS" not in result.text.upper()):
+            err_msg = clean(BeautifulSoup(result.text, "lxml").get_text(" "))[:300] if result else "No bill returned"
+            raise RuntimeError(err_msg or "No bill returned")
         return BeautifulSoup(result.text, "lxml")
 
     def scrape_account(self, raw_account, existing_status=None, stop_event=None, log_callback=None, history_mode=None, pause_event=None):
@@ -1376,8 +1445,26 @@ class PITCBillScraper:
         sheet = workbook.active
 
         # 1. Read existing headers and existing rows into record dictionaries
-        first = str(sheet.cell(1, 1).value or "").strip().lower().rstrip(".")
-        has_heading = first in {"ac", "ac no", "account", "account no"}
+        first_raw = sheet.cell(1, 1).value
+        first_str = str(first_raw or "").strip()
+        first_norm = first_str.lower().rstrip(".:#_- ")
+        first_digits = re.sub(r"\D", "", first_str)
+
+        # Detect whether row 1 contains headers:
+        # - Has alphabetic characters (e.g. 'Reference Number', 'AC No', 'Account', 'Ref')
+        # - Matches any common header naming variants
+        # - Or is not a 10-14 digit account number
+        header_keywords = {
+            "ac", "ac no", "ac_no", "acno", "account", "account no", "account_no", "account number", "account_number",
+            "ref", "ref no", "ref_no", "refno", "reference", "reference no", "reference_no", "reference number", "reference_number",
+            "consumer", "consumer id", "consumer_id", "consumer no", "consumer_no", "consumer number", "consumer_number",
+            "cust", "customer", "customer id", "customer no", "customer number",
+            "id", "no", "bill", "bill no", "billing", "header", "heading"
+        }
+        has_letters = bool(re.search(r"[a-zA-Z]", first_str))
+        is_valid_account = len(first_digits) >= 10 and not has_letters
+
+        has_heading = has_letters or (first_norm in header_keywords) or (not is_valid_account)
         data_start_row = 2 if has_heading else 1
 
         old_max_col = sheet.max_column
@@ -1397,6 +1484,11 @@ class PITCBillScraper:
         for r in range(data_start_row, old_max_row + 1):
             raw_ac = sheet.cell(r, 1).value
             if raw_ac is None or not str(raw_ac).strip():
+                continue
+            # Safety check: skip any header-like rows that appear in the data range
+            ac_str = str(raw_ac).strip()
+            ac_digits = re.sub(r"\D", "", ac_str)
+            if len(ac_digits) < 8 and re.search(r"[a-zA-Z]", ac_str):
                 continue
             record = {}
             for col in range(1, old_max_col + 1):
@@ -1640,7 +1732,7 @@ LOG_BG = "#1e1e1e"             # Same as IDE code editor canvas
 LOG_FG = "#d4d4d4"             # Clean readable terminal text
 
 # Version & Secure License/Update server endpoint (keeps GitHub repo 100% private)
-APP_VERSION = "1.3.7"
+APP_VERSION = "1.3.8"
 UPDATE_API_URL = f"{LICENSE_API_URL}/api/updates/latest"
 
 
@@ -3252,7 +3344,7 @@ class BillScraperApp(tk.Tk):
         self.url_var = tk.StringVar(value=config.get("bills_url", URL))
         self.url_entry: ttk.Entry | None = None
         self.url_btn: ttk.Button | None = None
-        self.delay_var = tk.DoubleVar(value=2.0)
+        self.delay_var = tk.DoubleVar(value=3.0)
         self.history_1yr_var = tk.BooleanVar(value=False)
         self.history_6mo_var = tk.BooleanVar(value=False)
         self.chk_history_1yr: ttk.Checkbutton | None = None
@@ -3461,7 +3553,7 @@ class BillScraperApp(tk.Tk):
         ttk.Label(settings_box, text="Delay (seconds):").grid(row=0, column=0, sticky="w", pady=2)
         spin = ttk.Spinbox(settings_box, from_=0.5, to=30.0, increment=0.5, textvariable=self.delay_var, width=6)
         spin.grid(row=0, column=1, sticky="w", padx=(6, 4), pady=2)
-        ttk.Label(settings_box, text="(Default 2.0s prevents PITC blocking)", style="Muted.TLabel").grid(row=1, column=0, columnspan=2, sticky="w", pady=(2, 4))
+        ttk.Label(settings_box, text="(Default 3.0s prevents PITC blocking & CAPTCHA rate-limits)", style="Muted.TLabel").grid(row=1, column=0, columnspan=2, sticky="w", pady=(2, 4))
 
         self.chk_history_1yr = ttk.Checkbutton(
             settings_box,

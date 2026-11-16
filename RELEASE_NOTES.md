@@ -1,1 +1,1 @@
-• Modern dark squircle app icon, streamlined Windows build pipeline, and PITC CAPTCHA solving
+• Updated desktop shortcut icon binding and verified dark squircle branding across all systems

@@ -1,1 +1,1 @@
-• Automated PITC CAPTCHA solving with ddddocr, fixed header detection, and increased default delay to 3.0s
+• Modern dark squircle app icon, streamlined Windows build pipeline, and PITC CAPTCHA solving

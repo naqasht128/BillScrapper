@@ -1765,15 +1765,7 @@ def check_for_updates(current_version: str = APP_VERSION) -> UpdateInfo | None:
             "User-Agent": "BillScrapper-DesktopApp",
             "Accept": "application/json",
         }
-        params = {}
-        if sys.platform == "win32":
-            try:
-                winver = sys.getwindowsversion()
-                if winver.major == 6 and winver.minor == 1:
-                    params["os"] = "win7"
-            except Exception:
-                pass
-        resp = requests.get(UPDATE_API_URL, headers=headers, params=params, timeout=8)
+        resp = requests.get(UPDATE_API_URL, headers=headers, timeout=8)
         if resp.status_code != 200:
             return None
         data = resp.json()

@@ -380,48 +380,85 @@ app.post('/api/admin/generate', async (req, res) => {
 const GITHUB_REPO = process.env.GITHUB_REPO || 'naqasht128/BillScrapper';
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN || '';
 
+function cleanReleaseNotes(raw) {
+  if (!raw || typeof raw !== 'string') return '';
+  const lines = raw.replace(/\r\n/g, '\n').split('\n');
+  const cleaned = [];
+
+  for (let line of lines) {
+    let trimmed = line.trim();
+    if (!trimmed) continue;
+
+    // Skip automated GitHub comparison footer lines (e.g. **Full Changelog**: ...)
+    if (/full changelog/i.test(trimmed)) continue;
+
+    // Strip GitHub repository links, comparison URLs, and PR references
+    if (/github\.com/i.test(trimmed)) {
+      trimmed = trimmed
+        .replace(/\s*in\s+https?:\/\/github\.com\S+/gi, '')
+        .replace(/\[([^\]]+)\]\(https?:\/\/github\.com[^\)]*\)/gi, '$1')
+        .replace(/https?:\/\/github\.com\S*/gi, '')
+        .replace(/\s*by\s+@[\w-]+/gi, '')
+        .trim();
+    }
+
+    if (trimmed) {
+      cleaned.push(trimmed);
+    }
+  }
+
+  return cleaned.join('\n').trim();
+}
+
 /**
  * GET /api/updates/latest
  * Returns latest version metadata for desktop app without exposing GitHub repo
  */
 app.get('/api/updates/latest', async (req, res) => {
   try {
-    // 1. If GITHUB_TOKEN is configured in Vercel, query GitHub dynamically
-    if (GITHUB_TOKEN) {
-      try {
-        const ghUrl = `https://api.github.com/repos/${GITHUB_REPO}/releases/latest`;
-        const ghRes = await fetch(ghUrl, {
-          headers: {
-            'User-Agent': 'BillScrapper-LicenseServer',
-            'Authorization': `Bearer ${GITHUB_TOKEN}`,
-            'Accept': 'application/vnd.github.v3+json'
-          }
-        });
-
-        if (ghRes.ok) {
-          const data = await ghRes.json();
-          const tag = (data.tag_name || '').replace(/^v/, '');
-          const assets = data.assets || [];
-
-          // Find setup or installer asset
-          const setupAsset = assets.find(a => a.name.toLowerCase().includes('setup') && a.name.toLowerCase().endsWith('.exe'))
-            || assets.find(a => a.name.toLowerCase().endsWith('.exe'));
-
-          if (setupAsset) {
-            const host = req.get('host');
-            const proto = req.headers['x-forwarded-proto'] || 'https';
-            return res.json({
-              version: tag,
-              file_name: setupAsset.name,
-              file_size: setupAsset.size || 0,
-              download_url: `${proto}://${host}/api/updates/download?asset_id=${setupAsset.id}`,
-              release_notes: data.body || 'New update available with performance enhancements.'
-            });
-          }
-        }
-      } catch (ghErr) {
-        console.warn('[GH FETCH WARN] Failed to fetch from GitHub API:', ghErr.message);
+    // 1. Query GitHub dynamically (supports both authenticated and public access)
+    try {
+      const ghHeaders = {
+        'User-Agent': 'BillScrapper-LicenseServer',
+        'Accept': 'application/vnd.github.v3+json'
+      };
+      if (GITHUB_TOKEN) {
+        ghHeaders['Authorization'] = `Bearer ${GITHUB_TOKEN}`;
       }
+
+      const ghUrl = `https://api.github.com/repos/${GITHUB_REPO}/releases/latest`;
+      let ghRes = await fetch(ghUrl, { headers: ghHeaders });
+
+      // If authenticated fetch failed (e.g. expired/invalid token), retry anonymously
+      if (!ghRes.ok && GITHUB_TOKEN) {
+        delete ghHeaders['Authorization'];
+        ghRes = await fetch(ghUrl, { headers: ghHeaders });
+      }
+
+      if (ghRes.ok) {
+        const data = await ghRes.json();
+        const tag = (data.tag_name || '').replace(/^v/, '');
+        const assets = data.assets || [];
+
+        // Find setup or installer asset
+        const setupAsset = assets.find(a => a.name.toLowerCase().includes('setup') && a.name.toLowerCase().endsWith('.exe'))
+          || assets.find(a => a.name.toLowerCase().endsWith('.exe'));
+
+        if (setupAsset) {
+          const host = req.get('host');
+          const proto = req.headers['x-forwarded-proto'] || 'https';
+          const dlUrl = setupAsset.browser_download_url || `${proto}://${host}/api/updates/download?asset_id=${setupAsset.id}`;
+          return res.json({
+            version: tag,
+            file_name: setupAsset.name,
+            file_size: setupAsset.size || 0,
+            download_url: dlUrl,
+            release_notes: cleanReleaseNotes(data.body) || 'New update available with performance enhancements.'
+          });
+        }
+      }
+    } catch (ghErr) {
+      console.warn('[GH FETCH WARN] Failed to fetch from GitHub API:', ghErr.message);
     }
 
     // 2. Fallback: Check Supabase table 'app_updates' if present
@@ -439,7 +476,7 @@ app.get('/api/updates/latest', async (req, res) => {
           file_name: updateRecord.file_name || 'BillScrapper-Setup.exe',
           file_size: updateRecord.file_size || 0,
           download_url: updateRecord.download_url,
-          release_notes: updateRecord.release_notes || 'New update available.'
+          release_notes: cleanReleaseNotes(updateRecord.release_notes) || 'New update available.'
         });
       }
     } catch (dbErr) {
@@ -447,8 +484,8 @@ app.get('/api/updates/latest', async (req, res) => {
     }
 
     // 3. Fallback to environment variables
-    const fallbackVersion = (process.env.LATEST_VERSION || '1.2.0').replace(/^v/, '');
-    const fallbackUrl = process.env.LATEST_DOWNLOAD_URL || '';
+    const fallbackVersion = (process.env.LATEST_VERSION || '1.3.9').replace(/^v/, '');
+    const fallbackUrl = process.env.LATEST_DOWNLOAD_URL || `https://github.com/${GITHUB_REPO}/releases/latest/download/BillScrapper-Setup.exe`;
     return res.json({
       version: fallbackVersion,
       file_name: 'BillScrapper-Setup.exe',
@@ -471,43 +508,60 @@ app.get('/api/updates/download', async (req, res) => {
     const { asset_id } = req.query;
 
     if (asset_id && GITHUB_TOKEN) {
-      const assetUrl = `https://api.github.com/repos/${GITHUB_REPO}/releases/assets/${asset_id}`;
-      const ghRes = await fetch(assetUrl, {
-        headers: {
-          'User-Agent': 'BillScrapper-LicenseServer',
-          'Authorization': `Bearer ${GITHUB_TOKEN}`,
-          'Accept': 'application/octet-stream'
-        },
-        redirect: 'follow'
-      });
+      try {
+        const assetUrl = `https://api.github.com/repos/${GITHUB_REPO}/releases/assets/${asset_id}`;
+        const ghRes = await fetch(assetUrl, {
+          headers: {
+            'User-Agent': 'BillScrapper-LicenseServer',
+            'Authorization': `Bearer ${GITHUB_TOKEN}`,
+            'Accept': 'application/octet-stream'
+          },
+          redirect: 'follow'
+        });
 
-      if (!ghRes.ok) {
-        return res.status(ghRes.status).send('Failed to fetch update asset from storage.');
+        if (ghRes.ok) {
+          const contentType = ghRes.headers.get('content-type') || 'application/octet-stream';
+          const arrayBuffer = await ghRes.arrayBuffer();
+          const buffer = Buffer.from(arrayBuffer);
+
+          res.setHeader('Content-Type', contentType);
+          res.setHeader('Content-Length', buffer.length);
+          res.setHeader('Cache-Control', 'no-transform, public, max-age=300');
+          res.setHeader('Accept-Ranges', 'bytes');
+          res.setHeader('Content-Disposition', 'attachment; filename="BillScrapper-Setup.exe"');
+
+          return res.send(buffer);
+        }
+      } catch (proxyErr) {
+        console.warn('[DOWNLOAD PROXY WARN]', proxyErr.message);
       }
-
-      const contentType = ghRes.headers.get('content-type') || 'application/octet-stream';
-      const arrayBuffer = await ghRes.arrayBuffer();
-      const buffer = Buffer.from(arrayBuffer);
-
-      res.setHeader('Content-Type', contentType);
-      res.setHeader('Content-Length', buffer.length);
-      res.setHeader('Cache-Control', 'no-transform, public, max-age=300');
-      res.setHeader('Accept-Ranges', 'bytes');
-      res.setHeader('Content-Disposition', 'attachment; filename="BillScrapper-Setup.exe"');
-
-      return res.send(buffer);
     }
 
-    // Direct URL redirect fallback
-    const directUrl = process.env.LATEST_DOWNLOAD_URL;
-    if (directUrl) {
-      return res.redirect(directUrl);
+    // Direct redirect to GitHub Release download URL
+    try {
+      const ghUrl = `https://api.github.com/repos/${GITHUB_REPO}/releases/latest`;
+      const ghRes = await fetch(ghUrl, {
+        headers: { 'User-Agent': 'BillScrapper-LicenseServer', 'Accept': 'application/vnd.github.v3+json' }
+      });
+      if (ghRes.ok) {
+        const data = await ghRes.json();
+        const assets = data.assets || [];
+        const setupAsset = (asset_id ? assets.find(a => String(a.id) === String(asset_id)) : null)
+          || assets.find(a => a.name.toLowerCase().includes('setup') && a.name.toLowerCase().endsWith('.exe'))
+          || assets.find(a => a.name.toLowerCase().endsWith('.exe'));
+        if (setupAsset && setupAsset.browser_download_url) {
+          return res.redirect(302, setupAsset.browser_download_url);
+        }
+      }
+    } catch (redirectErr) {
+      console.warn('[DOWNLOAD REDIRECT WARN]', redirectErr.message);
     }
 
-    return res.status(404).send('Download file not found.');
+    const directUrl = process.env.LATEST_DOWNLOAD_URL || `https://github.com/${GITHUB_REPO}/releases/latest/download/BillScrapper-Setup.exe`;
+    return res.redirect(302, directUrl);
   } catch (err) {
     console.error('[DOWNLOAD PROXY ERROR]', err);
-    return res.status(500).send('Error downloading update file.');
+    return res.redirect(302, `https://github.com/${GITHUB_REPO}/releases/latest/download/BillScrapper-Setup.exe`);
   }
 });
 

@@ -1,1 +1,1 @@
-• Updated desktop shortcut icon binding and verified dark squircle branding across all systems
+• Ultra-fast launch, reduced size, indexed progress logging, and automatic CAPTCHA solving

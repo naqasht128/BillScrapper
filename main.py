@@ -24,6 +24,10 @@ import uuid
 import webbrowser
 import zipfile
 from datetime import datetime, timezone
+import types
+
+# Lightweight cv2 stub to prevent ddddocr 1.6.1 from importing 118MB OpenCV
+sys.modules.setdefault("cv2", types.ModuleType("cv2"))
 
 try:
     import winreg
@@ -1549,6 +1553,8 @@ class PITCBillScraper:
                     break
                 account = record.get("AC No.")
                 existing_status = record.get("status")
+                if log_callback and account:
+                    log_callback(f"{done}/{total}: Processing {account}")
                 try:
                     result = self.scrape_account(
                         account,

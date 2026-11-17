@@ -26,6 +26,16 @@ import zipfile
 from datetime import datetime, timezone
 import types
 
+# Reconfigure stdout/stderr to utf-8 on Windows to prevent charmap encoding errors
+if sys.platform == "win32":
+    try:
+        if sys.stdout and hasattr(sys.stdout, "reconfigure"):
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        if sys.stderr and hasattr(sys.stderr, "reconfigure"):
+            sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 # Lightweight cv2 stub to prevent ddddocr 1.6.1 from importing 118MB OpenCV
 sys.modules.setdefault("cv2", types.ModuleType("cv2"))
 
@@ -773,9 +783,16 @@ class PITCBillScraper:
         if cls._ocr is None:
             try:
                 import ddddocr
-                cls._ocr = ddddocr.DdddOcr(show_ad=False)
+                try:
+                    cls._ocr = ddddocr.DdddOcr(show_ad=False)
+                except Exception:
+                    # Fallback to beta model if common_old.onnx is missing or fails
+                    cls._ocr = ddddocr.DdddOcr(beta=True, show_ad=False)
             except Exception as exc:
-                print(f"Warning: Failed to initialize ddddocr: {exc}")
+                try:
+                    print(f"Warning: Failed to initialize ddddocr: {exc}")
+                except Exception:
+                    pass
                 cls._ocr = False
         return cls._ocr if cls._ocr else None
 
@@ -1738,7 +1755,7 @@ LOG_BG = "#1e1e1e"             # Same as IDE code editor canvas
 LOG_FG = "#d4d4d4"             # Clean readable terminal text
 
 # Version & Secure License/Update server endpoint (keeps GitHub repo 100% private)
-APP_VERSION = "1.3.11"
+APP_VERSION = "1.3.12"
 UPDATE_API_URL = f"{LICENSE_API_URL}/api/updates/latest"
 
 

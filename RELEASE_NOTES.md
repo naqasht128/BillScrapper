@@ -1,1 +1,1 @@
-• Ultra-fast launch, reduced size, indexed progress logging, and automatic CAPTCHA solving
+• Trim 52MB beta OCR model to 13MB default model and fix charmap encoding
